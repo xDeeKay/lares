@@ -1,0 +1,23 @@
+# Local-only project file
+CLAUDE.md
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+*.egg-info/
+
+# Environment / secrets
+.env
+config.json
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# OS/editor cruft
+Thumbs.db
+desktop.ini
+.vscode/
