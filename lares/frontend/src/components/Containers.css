@@ -1,6 +1,12 @@
 .containers__table-wrap {
   margin-top: 1rem;
   overflow-x: auto;
+  /* Explicit, not just relying on the default: per the CSS overflow spec,
+     setting only overflow-x leaves the browser free to also treat
+     overflow-y as auto, which was creating a separate, pointless scroll
+     region on this element instead of just letting the page's own
+     scrollbar handle vertical overflow. */
+  overflow-y: visible;
 }
 
 .containers__table {
@@ -75,5 +81,4 @@
   gap: 0.4rem;
   justify-content: flex-end;
   white-space: nowrap;
-  padding-right: 1.25rem;
 }
