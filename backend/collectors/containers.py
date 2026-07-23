@@ -97,18 +97,29 @@ def collect_and_upsert(conn, client, due_for_update_check: bool) -> list[dict]:
         logger.error("failed to list containers: %s", type(exc).__name__)
         return metric_samples
 
+    # Gather everything that touches Docker or the network before opening any
+    # write transaction. A registry lookup can take seconds (or longer under
+    # rate limiting), and sqlite3 implicitly starts a write transaction on the
+    # first execute() below, so doing this inline used to hold the SQLite
+    # writer lock for the whole loop and starve the other collectors' writes.
+    gathered: dict[str, tuple[str, dict | None, bool | None]] = {}
     for c in containers:
         image_ref = c.attrs.get("Config", {}).get("Image") or c.attrs.get("Image", "unknown")
-
+        stats = None
         computed_update = None
-        if due_for_update_check and c.status == "running":
-            try:
-                local_digests = c.image.attrs.get("RepoDigests", []) if c.image else []
-            except (DockerException, NotFound) as exc:
-                logger.debug("could not read image digests for %s: %s", c.name, type(exc).__name__)
-                local_digests = []
-            computed_update = check_for_update(image_ref, local_digests)
+        if c.status == "running":
+            stats = compute_stats(c)
+            if due_for_update_check:
+                try:
+                    local_digests = c.image.attrs.get("RepoDigests", []) if c.image else []
+                except (DockerException, NotFound) as exc:
+                    logger.debug("could not read image digests for %s: %s", c.name, type(exc).__name__)
+                    local_digests = []
+                computed_update = check_for_update(image_ref, local_digests)
+        gathered[c.id] = (image_ref, stats, computed_update)
 
+    for c in containers:
+        image_ref, stats, computed_update = gathered[c.id]
         update_available = _resolve_update_flag(conn, c.id, computed_update)
 
         conn.execute(
@@ -116,10 +127,8 @@ def collect_and_upsert(conn, client, due_for_update_check: bool) -> list[dict]:
             (c.id, c.name, image_ref, c.status, update_available, now_iso),
         )
 
-        if c.status == "running":
-            stats = compute_stats(c)
-            if stats:
-                metric_samples.append({"container_id": c.id, "timestamp": now_iso, **stats})
+        if stats:
+            metric_samples.append({"container_id": c.id, "timestamp": now_iso, **stats})
 
     conn.commit()
     return metric_samples
