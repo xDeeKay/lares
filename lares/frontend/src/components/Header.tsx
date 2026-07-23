@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useAuth } from '../auth/AuthContext';
 import { ChangePasswordModal } from './ChangePasswordModal';
+import cornucopia from '../assets/cornucopia.png';
 import './Header.css';
 
 export function Header() {
@@ -10,9 +11,11 @@ export function Header() {
   return (
     <header className="app-header">
       <div className="app-header__row">
-        <div>
-          <h1 className="app-header__wordmark">Lares</h1>
-          <p className="app-header__tagline">Home lab, watched over</p>
+        <div className="app-header__brand">
+          <img className="app-header__logo" src={cornucopia} alt="" />
+          <h1 className="app-header__wordmark">
+            Lares <span className="app-header__tagline">Your home network, watched over.</span>
+          </h1>
         </div>
         <div className="app-header__actions">
           <button

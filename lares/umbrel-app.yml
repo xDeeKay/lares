@@ -3,7 +3,7 @@ id: lares
 category: networking
 name: Lares
 version: "0.1.0"
-tagline: Home lab, watched over
+tagline: Your home network, watched over.
 description: >-
   A custom monitoring dashboard for system metrics, disk storage, and
   Docker container status and control, built for a home lab Raspberry Pi.
