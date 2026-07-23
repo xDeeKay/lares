@@ -5,7 +5,7 @@ services:
       APP_PORT: 8000
 
   web:
-    image: lares:0.1.0
+    image: xdeekay/lares:0.1.0@sha256:11c0649e34c9e1a3ead1ce801cf379e5ae9b25aa0a2e15e2c4fe717b59c41816
     restart: unless-stopped
     volumes:
       - ${APP_DATA_DIR}/data:/app/backend/data
