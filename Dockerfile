@@ -19,6 +19,8 @@ COPY --from=python-deps /install /usr/local
 WORKDIR /app
 COPY backend ./backend
 COPY --from=frontend-build /app/frontend/dist ./frontend/dist
+COPY docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh
 ENV PYTHONUNBUFFERED=1
 EXPOSE 8000
-CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["/app/docker-entrypoint.sh"]
