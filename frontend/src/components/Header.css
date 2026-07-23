@@ -10,6 +10,11 @@
   gap: 1rem;
 }
 
+.app-header__actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
 .app-header__wordmark {
   font-size: 1.75rem;
   letter-spacing: 0.06em;
