@@ -1,0 +1,8 @@
+.status-message {
+  font-size: 0.9rem;
+  color: var(--text-muted);
+}
+
+.status-message--danger {
+  color: var(--danger-badge-fg);
+}

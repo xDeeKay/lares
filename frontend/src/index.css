@@ -1,0 +1,59 @@
+:root {
+  --bg: #161715;
+  --card-bg: #201f1c;
+  --border: #2c332c;
+
+  --verdigris: #4f7a63;
+  --verdigris-badge-bg: #2d4437;
+  --verdigris-badge-fg: #8fba9e;
+
+  --bronze: #cbaa5c;
+
+  --danger: #b3654f;
+  --danger-badge-bg: #402b26;
+  --danger-badge-fg: #d08370;
+
+  --text: #dce3d9;
+  --text-muted: #8fa396;
+
+  --sans: 'Segoe UI', system-ui, Roboto, sans-serif;
+  --heading: 'Cinzel', var(--sans);
+  --mono: ui-monospace, Consolas, monospace;
+
+  color-scheme: dark;
+  color: var(--text);
+  background: var(--bg);
+  font: 16px/1.5 var(--sans);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100svh;
+}
+
+#root {
+  min-height: 100svh;
+  display: flex;
+  flex-direction: column;
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--heading);
+  font-weight: 600;
+  color: var(--text);
+  margin: 0;
+}
+
+p {
+  margin: 0;
+}

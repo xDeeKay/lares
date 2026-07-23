@@ -1,0 +1,16 @@
+.app-header {
+  padding: 1.5rem 2rem 1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.app-header__wordmark {
+  font-size: 1.75rem;
+  letter-spacing: 0.06em;
+  color: var(--verdigris-badge-fg);
+}
+
+.app-header__tagline {
+  margin-top: 0.25rem;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}

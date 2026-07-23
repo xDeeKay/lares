@@ -1,0 +1,56 @@
+.system-stats__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 1rem;
+  margin: 1rem 0;
+}
+
+.stat-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.stat-tile__label {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.stat-tile__value {
+  font-size: 1.75rem;
+  font-weight: 600;
+}
+
+.stat-tile__detail {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.throttle-indicator {
+  border-radius: 6px;
+  padding: 0.6rem 0.85rem;
+  font-size: 0.85rem;
+}
+
+.throttle-indicator--healthy {
+  background: var(--verdigris-badge-bg);
+  color: var(--verdigris-badge-fg);
+}
+
+.throttle-indicator--warning {
+  background: color-mix(in srgb, var(--bronze) 20%, transparent);
+  color: var(--bronze);
+}
+
+.throttle-indicator--danger {
+  background: var(--danger-badge-bg);
+  color: var(--danger-badge-fg);
+}
+
+.throttle-indicator--muted {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+}

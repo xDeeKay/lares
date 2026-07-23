@@ -1,0 +1,17 @@
+.confirm-dialog__message {
+  margin-top: 0.75rem;
+  color: var(--text-muted);
+}
+
+.confirm-dialog__error {
+  margin-top: 0.75rem;
+  color: var(--danger-badge-fg);
+  font-size: 0.9rem;
+}
+
+.confirm-dialog__actions {
+  margin-top: 1.25rem;
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.6rem;
+}
