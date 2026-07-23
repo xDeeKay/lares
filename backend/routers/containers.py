@@ -41,8 +41,11 @@ class ContainerActionOut(BaseModel):
     action: str
     timestamp: str
     success: bool
-    status: str | None  # the container's resulting status, so the frontend can
-    # update its view immediately rather than waiting for the next poll
+    # The container's resulting status right after an action, so the frontend
+    # can update its view immediately rather than waiting for the next poll.
+    # Only populated on a fresh stop/restart response; action history rows
+    # never had this persisted (container_actions has no status column).
+    status: str | None = None
 
 
 class ContainerLogsOut(BaseModel):
