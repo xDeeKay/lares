@@ -1,0 +1,21 @@
+name: lares-dev
+
+services:
+  web:
+    build: .
+    # Must match prod's Umbrel-injected name: the real app_proxy (already
+    # running from the installed prod app) routes to APP_HOST=lares_web_1.
+    # Stop prod first so this container can claim that name and get routed to.
+    container_name: lares_web_1
+    restart: unless-stopped
+    volumes:
+      - /home/umbrel/umbrel/app-data/lares/data:/app/backend/data
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /etc/localtime:/etc/localtime:ro
+    networks:
+      - umbrel_main_network
+
+networks:
+  umbrel_main_network:
+    external: true
+    name: umbrel_main_network

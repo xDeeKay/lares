@@ -1,0 +1,22 @@
+manifestVersion: 1
+id: lares
+category: networking
+name: Lares
+version: "0.1.0"
+tagline: Home lab, watched over
+description: >-
+  A custom monitoring dashboard for system metrics, disk storage, and
+  Docker container status and control, built for a home lab Raspberry Pi.
+developer: xDeeKay
+website: https://github.com/xDeeKay/lares
+dependencies: []
+repo: https://github.com/xDeeKay/lares
+support: https://github.com/xDeeKay/lares/issues
+port: 8000
+gallery:
+  - 1.jpg
+  - 2.jpg
+  - 3.jpg
+path: ""
+defaultUsername: ""
+defaultPassword: ""

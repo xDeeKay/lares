@@ -8,8 +8,10 @@ Run with: uvicorn backend.main:app --reload
 """
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import Depends, FastAPI
+from fastapi.staticfiles import StaticFiles
 
 from backend.auth import require_auth
 from backend.db import init_db
@@ -33,3 +35,14 @@ app.include_router(auth.router)
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+# Serves the built frontend when it's present (the Docker image builds it
+# in). Mounted last so it can never shadow /api/* or /health, and skipped
+# entirely when frontend/dist doesn't exist (e.g. the Pi's bare-process dev
+# setup, which has no Node/frontend build at all) rather than crashing the
+# whole API on startup, matching the collectors' "not a hard dependency"
+# pattern.
+_FRONTEND_DIST = Path(__file__).parent.parent / "frontend" / "dist"
+if _FRONTEND_DIST.is_dir():
+    app.mount("/", StaticFiles(directory=str(_FRONTEND_DIST), html=True), name="static")
