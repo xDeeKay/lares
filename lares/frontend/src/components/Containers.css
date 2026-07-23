@@ -1,12 +1,15 @@
 .containers__table-wrap {
   margin-top: 1rem;
   overflow-x: auto;
-  /* Explicit, not just relying on the default: per the CSS overflow spec,
-     setting only overflow-x leaves the browser free to also treat
-     overflow-y as auto, which was creating a separate, pointless scroll
-     region on this element instead of just letting the page's own
-     scrollbar handle vertical overflow. */
-  overflow-y: visible;
+  /* Per the CSS overflow spec, pairing overflow-x: auto with a "visible"
+     overflow-y (the default, and computationally identical even if written
+     out explicitly) causes the browser to also treat overflow-y as auto,
+     creating a separate, pointless scroll region on this element instead
+     of letting the page's own scrollbar handle vertical overflow. Nothing
+     here needs to overflow vertically (no height constraint on this
+     element), so hidden is safe and avoids the conversion rule, unlike
+     visible does. */
+  overflow-y: hidden;
 }
 
 .containers__table {
