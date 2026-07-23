@@ -34,7 +34,7 @@ EXCLUDED_FSTYPES = {
     "tmpfs", "devtmpfs", "squashfs", "overlay", "proc", "sysfs",
     "cgroup", "cgroup2", "devpts", "autofs", "binfmt_misc", "debugfs",
     "mqueue", "hugetlbfs", "pstore", "securityfs", "tracefs", "configfs",
-    "fusectl", "efivarfs",
+    "fusectl", "efivarfs", "nsfs", "bpf",
 }
 
 _HOST_ROOT = Path("/host")
