@@ -11,3 +11,8 @@ services:
       - ${APP_DATA_DIR}/data:/app/backend/data
       - /var/run/docker.sock:/var/run/docker.sock
       - /etc/localtime:/etc/localtime:ro
+      # Host root + /proc, read-only, so the disk collector can see the
+      # host's real mount table instead of just this container's own
+      # isolated filesystem. See backend/collectors/disk.py's docstring.
+      - /:/host:ro
+      - /proc:/host/proc:ro

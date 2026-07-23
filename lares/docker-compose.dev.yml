@@ -12,6 +12,8 @@ services:
       - /home/umbrel/umbrel/app-data/lares/data:/app/backend/data
       - /var/run/docker.sock:/var/run/docker.sock
       - /etc/localtime:/etc/localtime:ro
+      - /:/host:ro
+      - /proc:/host/proc:ro
     networks:
       - umbrel_main_network
 
