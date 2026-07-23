@@ -109,6 +109,30 @@ def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_container_actions_timestamp "
             "ON container_actions (timestamp)"
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS auth_config (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                password_hash TEXT NOT NULL,
+                updated_at DATETIME NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS auth_sessions (
+                id INTEGER PRIMARY KEY,
+                token_hash TEXT UNIQUE NOT NULL,
+                created_at DATETIME NOT NULL,
+                expires_at DATETIME NOT NULL,
+                last_seen_at DATETIME NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires_at "
+            "ON auth_sessions (expires_at)"
+        )
         conn.commit()
     finally:
         conn.close()

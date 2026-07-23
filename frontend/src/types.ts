@@ -61,3 +61,11 @@ export interface ContainerLogs {
   container_id: string;
   lines: string[];
 }
+
+export interface AuthStatus {
+  setup_required: boolean;
+}
+
+export interface AuthToken {
+  token: string;
+}

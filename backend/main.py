@@ -9,10 +9,11 @@ Run with: uvicorn backend.main:app --reload
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 
+from backend.auth import require_auth
 from backend.db import init_db
-from backend.routers import containers, disk, system
+from backend.routers import auth, containers, disk, system
 
 
 @asynccontextmanager
@@ -23,9 +24,10 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Lares", version="0.1.0", lifespan=lifespan)
 
-app.include_router(system.router)
-app.include_router(disk.router)
-app.include_router(containers.router)
+app.include_router(system.router, dependencies=[Depends(require_auth)])
+app.include_router(disk.router, dependencies=[Depends(require_auth)])
+app.include_router(containers.router, dependencies=[Depends(require_auth)])
+app.include_router(auth.router)
 
 
 @app.get("/health")

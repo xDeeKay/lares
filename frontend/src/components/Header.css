@@ -3,6 +3,13 @@
   border-bottom: 1px solid var(--border);
 }
 
+.app-header__row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
 .app-header__wordmark {
   font-size: 1.75rem;
   letter-spacing: 0.06em;
