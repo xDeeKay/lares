@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useAuth } from '../auth/AuthContext';
 import { ChangePasswordModal } from './ChangePasswordModal';
-import cornucopia from '../assets/cornucopia.png';
+import cornucopia from '../assets/cornucopia.svg';
 import './Header.css';
 
 export function Header() {
