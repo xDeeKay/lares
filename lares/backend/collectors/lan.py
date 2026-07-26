@@ -107,24 +107,32 @@ def detect_cidrs() -> list[str]:
 
 
 def scan(cidr: str) -> list[dict]:
-    """Runs `nmap -sn <cidr>` (ARP ping scan, real L2 discovery since this
-    container has host networking) and returns one dict per live host with a
-    resolved MAC address. Hosts without a MAC (nmap couldn't ARP-resolve them,
-    e.g. not actually on this L2 segment) are skipped, there's nothing
+    """Runs an ARP ping scan (-PR, real L2 discovery since this container has
+    host networking) and returns one dict per live host with a resolved MAC
+    address. Hosts without a MAC (nmap couldn't ARP-resolve them, e.g. not
+    actually on this L2 segment) are skipped, there's nothing
     device-identifying to record for them.
 
-    Runs the nbstat NSE script alongside the ping scan: reverse-DNS alone
-    (nmap's default naming source) depends on the LAN's router/DNS actually
-    populating PTR records, which many home networks don't do. NetBIOS Name
-    Service gets the real computer name straight from Windows (and most
-    Samba/NAS) boxes regardless of DNS, and nbstat ships with the nmap
-    package already installed, no extra dependency.
+    Also runs the nbstat NSE script: reverse-DNS alone (nmap's default naming
+    source) depends on the LAN's router/DNS actually populating PTR records,
+    which many home networks don't do. NetBIOS Name Service gets the real
+    computer name straight from Windows (and most Samba/NAS) boxes regardless
+    of DNS, and nbstat ships with the nmap package already installed, no
+    extra dependency.
+
+    Confirmed via --packet-trace on real hardware: nbstat's hostrule needs
+    UDP port 137 to already have a probed state before it'll send anything,
+    and plain -sn (host discovery only, no port scan at all) never gives it
+    one, silently no-opping the script every time regardless of whether the
+    target would have answered. -sU -p137 is nmap's own documented way to
+    invoke this script: a real but minimal single-port UDP scan, just enough
+    to satisfy that precondition, not a full port scan.
 
     --host-timeout bounds how long nmap itself will wait on any single
     unresponsive host (defense in depth alongside _scan_bounded's outer
     wall-clock timeout below, which is the real backstop)."""
     scanner = nmap.PortScanner()
-    scanner.scan(hosts=cidr, arguments="-sn --script nbstat --host-timeout 15s")
+    scanner.scan(hosts=cidr, arguments="-PR -sU -p137 --script nbstat --host-timeout 15s")
     now = datetime.now(timezone.utc).isoformat()
     results = []
     for ip in scanner.all_hosts():
