@@ -130,6 +130,24 @@ def collect_and_upsert(conn, client, due_for_update_check: bool) -> list[dict]:
         if stats:
             metric_samples.append({"container_id": c.id, "timestamp": now_iso, **stats})
 
+    # Docker container IDs aren't stable across recreation (e.g. `docker
+    # compose up --build` removes and recreates a container with a new ID
+    # even when its name is reused), and container_id is this table's
+    # upsert key, so a stale row for an ID Docker no longer has would
+    # otherwise never get cleaned up: it just sits there forever showing
+    # whatever status it last had, and any action against it 404s. Prune
+    # anything not in this poll's live list. Guarded against an empty
+    # result specifically (rather than pruning to nothing) since our own
+    # collector's container is always among "all containers on this host",
+    # so a genuinely empty list means the Docker API call itself is
+    # unreliable this cycle, not that every container disappeared.
+    live_ids = [c.id for c in containers]
+    if live_ids:
+        placeholders = ",".join("?" for _ in live_ids)
+        conn.execute(f"DELETE FROM containers WHERE container_id NOT IN ({placeholders})", live_ids)
+    else:
+        logger.warning("Docker reported zero containers, skipping stale-row cleanup this cycle")
+
     conn.commit()
     return metric_samples
 
