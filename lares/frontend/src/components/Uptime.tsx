@@ -1,9 +1,10 @@
 import { useState } from 'react';
-import { ApiError, deleteUptimeTarget, getUptimeStatus } from '../api';
+import { ApiError, checkUptimeTargetNow, deleteUptimeTarget, getUptimeStatus } from '../api';
 import { usePolling } from '../hooks/usePolling';
 import type { UptimeState, UptimeStatus, UptimeTarget } from '../types';
 import { ConfirmDialog } from './ConfirmDialog';
 import { StatusMessage } from './StatusMessage';
+import { UptimeTargetDetailModal } from './UptimeTargetDetailModal';
 import { UptimeTargetModal } from './UptimeTargetModal';
 import './Uptime.css';
 
@@ -12,6 +13,7 @@ const POLL_INTERVAL_MS = 15_000;
 function statusBadgeClass(state: UptimeState): string {
   if (state === 'up') return 'status-badge--healthy';
   if (state === 'down') return 'status-badge--danger';
+  if (state === 'pending') return 'status-badge--warning';
   return 'status-badge--muted';
 }
 
@@ -26,9 +28,11 @@ function formatResponseMs(ms: number | null): string {
 export function Uptime() {
   const { data, error, loading, refetch } = usePolling(getUptimeStatus, POLL_INTERVAL_MS);
   const [modalTarget, setModalTarget] = useState<UptimeTarget | null | 'new'>(null);
+  const [detailTarget, setDetailTarget] = useState<UptimeTarget | null>(null);
   const [pendingDelete, setPendingDelete] = useState<UptimeTarget | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [checkingIds, setCheckingIds] = useState<Set<number>>(new Set());
 
   function closeModal() {
     setModalTarget(null);
@@ -56,6 +60,23 @@ export function Uptime() {
       setDeleteError(err instanceof ApiError ? err.message : 'Failed to delete target.');
     } finally {
       setDeleteBusy(false);
+    }
+  }
+
+  async function handleCheckNow(target: UptimeTarget) {
+    setCheckingIds((prev) => new Set(prev).add(target.id));
+    try {
+      await checkUptimeTargetNow(target.id);
+      refetch();
+    } catch {
+      // A failed manual check isn't worth its own error banner; the row's
+      // status simply won't have updated, which is visible enough.
+    } finally {
+      setCheckingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(target.id);
+        return next;
+      });
     }
   }
 
@@ -97,7 +118,15 @@ export function Uptime() {
             <tbody>
               {data.map((s: UptimeStatus) => (
                 <tr key={s.target.id}>
-                  <td>{s.target.name}</td>
+                  <td>
+                    <button
+                      type="button"
+                      className="uptime__name-link"
+                      onClick={() => setDetailTarget(s.target)}
+                    >
+                      {s.target.name}
+                    </button>
+                  </td>
                   <td className="uptime__type">{s.target.target_type}</td>
                   <td>
                     <span className={`status-badge ${statusBadgeClass(s.state)}`}>{s.state}</span>
@@ -106,6 +135,14 @@ export function Uptime() {
                   <td>{formatSla(s.sla_24h_pct)}</td>
                   <td>{formatSla(s.sla_7d_pct)}</td>
                   <td className="uptime__actions">
+                    <button
+                      type="button"
+                      className="btn btn--ghost btn--small"
+                      onClick={() => handleCheckNow(s.target)}
+                      disabled={checkingIds.has(s.target.id)}
+                    >
+                      {checkingIds.has(s.target.id) ? 'Checking…' : 'Check now'}
+                    </button>
                     <button
                       type="button"
                       className="btn btn--ghost btn--small"
@@ -138,6 +175,10 @@ export function Uptime() {
           onClose={closeModal}
           onSaved={handleSaved}
         />
+      ) : null}
+
+      {detailTarget ? (
+        <UptimeTargetDetailModal target={detailTarget} onClose={() => setDetailTarget(null)} />
       ) : null}
 
       {pendingDelete ? (

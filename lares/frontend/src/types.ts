@@ -79,9 +79,11 @@ export interface UptimeTarget {
   address: string;
   enabled: boolean;
   created_at: string;
+  check_interval_seconds: number | null;
+  check_timeout_seconds: number | null;
 }
 
-export type UptimeState = 'up' | 'down' | 'stale' | 'unknown';
+export type UptimeState = 'up' | 'down' | 'pending' | 'stale' | 'unknown';
 
 export interface UptimeStatus {
   target: UptimeTarget;
@@ -90,4 +92,16 @@ export interface UptimeStatus {
   response_ms: number | null;
   sla_24h_pct: number | null;
   sla_7d_pct: number | null;
+}
+
+export interface UptimeCheck {
+  timestamp: string;
+  is_up: boolean;
+  response_ms: number | null;
+}
+
+export interface UptimeIncident {
+  started_at: string;
+  ended_at: string | null;
+  duration_seconds: number;
 }

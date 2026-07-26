@@ -6,6 +6,7 @@ from urllib.parse import urlparse
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from backend.collectors.uptime import collect_sample
 from backend.db import get_connection
 
 router = APIRouter(prefix="/api/uptime", tags=["uptime"])
@@ -18,9 +19,18 @@ UPTIME_POLL_INTERVAL_SECONDS = float(os.environ.get("LARES_UPTIME_POLL_INTERVAL"
 UPTIME_STALE_THRESHOLD_SECONDS = float(
     os.environ.get("LARES_UPTIME_STALE_SECONDS", UPTIME_POLL_INTERVAL_SECONDS * 3)
 )
+# How many consecutive failing checks are required before a target flips
+# from "pending" (just started failing, might be a blip) to a confirmed
+# "down". Recovery is immediate: a single "up" check clears it right away.
+UPTIME_DEBOUNCE_COUNT = int(os.environ.get("LARES_UPTIME_DEBOUNCE_COUNT", 2))
 
 TargetType = Literal["http", "tcp", "ping"]
-UptimeState = Literal["up", "down", "stale", "unknown"]
+UptimeState = Literal["up", "down", "pending", "stale", "unknown"]
+
+_INSERT_CHECK_SQL = """
+    INSERT INTO uptime_checks (target_id, timestamp, is_up, response_ms)
+    VALUES (:target_id, :timestamp, :is_up, :response_ms)
+"""
 
 
 class UptimeTargetOut(BaseModel):
@@ -30,6 +40,8 @@ class UptimeTargetOut(BaseModel):
     address: str
     enabled: bool
     created_at: str
+    check_interval_seconds: int | None
+    check_timeout_seconds: int | None
 
 
 class UptimeTargetCreate(BaseModel):
@@ -37,6 +49,8 @@ class UptimeTargetCreate(BaseModel):
     target_type: TargetType
     address: str
     enabled: bool = True
+    check_interval_seconds: int | None = None
+    check_timeout_seconds: int | None = None
 
 
 class UptimeTargetUpdate(BaseModel):
@@ -44,6 +58,13 @@ class UptimeTargetUpdate(BaseModel):
     target_type: TargetType | None = None
     address: str | None = None
     enabled: bool | None = None
+    check_interval_seconds: int | None = None
+    check_timeout_seconds: int | None = None
+    # Explicit flags so a PATCH can clear an override back to "use the
+    # global default" (None), which a plain "field not provided" can't
+    # distinguish from "leave it as-is".
+    clear_check_interval: bool = False
+    clear_check_timeout: bool = False
 
 
 class UptimeStatusOut(BaseModel):
@@ -53,6 +74,23 @@ class UptimeStatusOut(BaseModel):
     response_ms: int | None
     sla_24h_pct: float | None
     sla_7d_pct: float | None
+
+
+class UptimeCheckOut(BaseModel):
+    timestamp: str
+    is_up: bool
+    response_ms: int | None
+
+
+class UptimeIncidentOut(BaseModel):
+    started_at: str
+    ended_at: str | None  # null means still ongoing
+    duration_seconds: float
+
+
+def _validate_name(name: str) -> None:
+    if not name or not name.strip():
+        raise HTTPException(status_code=400, detail="name must not be empty")
 
 
 def _validate_address(target_type: str, address: str) -> None:
@@ -67,6 +105,11 @@ def _validate_address(target_type: str, address: str) -> None:
                 detail="http targets need a full URL starting with http:// or https://",
             )
     elif target_type == "tcp":
+        if "://" in address:
+            raise HTTPException(
+                status_code=400,
+                detail='tcp targets must be "host:port", not a URL (no scheme like http://)',
+            )
         host, sep, port_str = address.rpartition(":")
         if not sep or not host:
             raise HTTPException(status_code=400, detail='tcp targets must be "host:port"')
@@ -76,7 +119,17 @@ def _validate_address(target_type: str, address: str) -> None:
             port = -1
         if not 1 <= port <= 65535:
             raise HTTPException(status_code=400, detail="tcp port must be between 1 and 65535")
-    # ping: any non-empty string is accepted (hostname or IP)
+    elif target_type == "ping":
+        if "://" in address:
+            raise HTTPException(
+                status_code=400,
+                detail="ping targets must be a bare hostname or IP, not a URL",
+            )
+        if address.strip().startswith("-"):
+            raise HTTPException(
+                status_code=400,
+                detail='ping targets must not start with "-" (would be parsed as a ping option)',
+            )
 
 
 def _row_to_target(row) -> UptimeTargetOut:
@@ -87,6 +140,8 @@ def _row_to_target(row) -> UptimeTargetOut:
         address=row["address"],
         enabled=bool(row["enabled"]),
         created_at=row["created_at"],
+        check_interval_seconds=row["check_interval_seconds"],
+        check_timeout_seconds=row["check_timeout_seconds"],
     )
 
 
@@ -106,7 +161,7 @@ def _compute_sla(conn, target_id: int, since_iso: str) -> float | None:
     return round(row["up_count"] * 100.0 / row["total"], 1)
 
 
-def _resolve_state(latest, now: datetime) -> tuple[UptimeState, str | None, int | None]:
+def _resolve_state(conn, target_id: int, latest, now: datetime) -> tuple[UptimeState, str | None, int | None]:
     if latest is None:
         return "unknown", None, None
 
@@ -123,7 +178,37 @@ def _resolve_state(latest, now: datetime) -> tuple[UptimeState, str | None, int 
     if age_seconds > UPTIME_STALE_THRESHOLD_SECONDS:
         return "stale", timestamp_str, response_ms
 
-    return ("up" if latest["is_up"] else "down"), timestamp_str, response_ms
+    if latest["is_up"]:
+        return "up", timestamp_str, response_ms
+
+    # Latest check failed. Only confirm "down" after UPTIME_DEBOUNCE_COUNT
+    # consecutive failures, so a single transient blip shows as "pending"
+    # rather than immediately alarming.
+    recent = conn.execute(
+        "SELECT is_up FROM uptime_checks WHERE target_id = ? ORDER BY timestamp DESC LIMIT ?",
+        (target_id, UPTIME_DEBOUNCE_COUNT),
+    ).fetchall()
+    if len(recent) < UPTIME_DEBOUNCE_COUNT or any(r["is_up"] for r in recent):
+        return "pending", timestamp_str, response_ms
+    return "down", timestamp_str, response_ms
+
+
+def _status_for_target(conn, target_row, now: datetime) -> UptimeStatusOut:
+    latest = conn.execute(
+        "SELECT * FROM uptime_checks WHERE target_id = ? ORDER BY timestamp DESC LIMIT 1",
+        (target_row["id"],),
+    ).fetchone()
+    since_24h = (now - timedelta(hours=24)).isoformat()
+    since_7d = (now - timedelta(days=7)).isoformat()
+    state, last_checked, response_ms = _resolve_state(conn, target_row["id"], latest, now)
+    return UptimeStatusOut(
+        target=_row_to_target(target_row),
+        state=state,
+        last_checked=last_checked,
+        response_ms=response_ms,
+        sla_24h_pct=_compute_sla(conn, target_row["id"], since_24h),
+        sla_7d_pct=_compute_sla(conn, target_row["id"], since_7d),
+    )
 
 
 @router.get("/targets", response_model=list[UptimeTargetOut])
@@ -138,13 +223,16 @@ def list_targets():
 
 @router.post("/targets", response_model=UptimeTargetOut, status_code=201)
 def create_target(payload: UptimeTargetCreate):
+    _validate_name(payload.name)
     _validate_address(payload.target_type, payload.address)
     conn = get_connection()
     try:
         cursor = conn.execute(
             """
-            INSERT INTO uptime_targets (name, target_type, address, enabled, created_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO uptime_targets
+                (name, target_type, address, enabled, created_at,
+                 check_interval_seconds, check_timeout_seconds)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 payload.name,
@@ -152,6 +240,8 @@ def create_target(payload: UptimeTargetCreate):
                 payload.address,
                 payload.enabled,
                 datetime.now(timezone.utc).isoformat(),
+                payload.check_interval_seconds,
+                payload.check_timeout_seconds,
             ),
         )
         conn.commit()
@@ -176,16 +266,33 @@ def update_target(target_id: int, payload: UptimeTargetUpdate):
         address = payload.address if payload.address is not None else row["address"]
         enabled = payload.enabled if payload.enabled is not None else bool(row["enabled"])
 
+        if payload.clear_check_interval:
+            check_interval = None
+        elif payload.check_interval_seconds is not None:
+            check_interval = payload.check_interval_seconds
+        else:
+            check_interval = row["check_interval_seconds"]
+
+        if payload.clear_check_timeout:
+            check_timeout = None
+        elif payload.check_timeout_seconds is not None:
+            check_timeout = payload.check_timeout_seconds
+        else:
+            check_timeout = row["check_timeout_seconds"]
+
+        if payload.name is not None:
+            _validate_name(name)
         if payload.address is not None or payload.target_type is not None:
             _validate_address(target_type, address)
 
         conn.execute(
             """
             UPDATE uptime_targets
-            SET name = ?, target_type = ?, address = ?, enabled = ?
+            SET name = ?, target_type = ?, address = ?, enabled = ?,
+                check_interval_seconds = ?, check_timeout_seconds = ?
             WHERE id = ?
             """,
-            (name, target_type, address, enabled, target_id),
+            (name, target_type, address, enabled, check_interval, check_timeout, target_id),
         )
         conn.commit()
         updated = conn.execute("SELECT * FROM uptime_targets WHERE id = ?", (target_id,)).fetchone()
@@ -208,32 +315,113 @@ def delete_target(target_id: int):
         conn.close()
 
 
+@router.post("/targets/{target_id}/check", response_model=UptimeStatusOut)
+def check_target_now(target_id: int):
+    """Runs one check immediately against the live target, bypassing the
+    collector's own schedule, and records the result like a normal poll
+    would. Useful right after adding a target instead of waiting out the
+    stale window to see whether it's actually reachable."""
+    conn = get_connection()
+    try:
+        target = conn.execute("SELECT * FROM uptime_targets WHERE id = ?", (target_id,)).fetchone()
+        if target is None:
+            raise HTTPException(status_code=404, detail="Target not found")
+
+        sample = collect_sample(target)
+        if sample is not None:
+            conn.execute(_INSERT_CHECK_SQL, sample)
+            conn.commit()
+
+        return _status_for_target(conn, target, datetime.now(timezone.utc))
+    finally:
+        conn.close()
+
+
+@router.get("/targets/{target_id}/history", response_model=list[UptimeCheckOut])
+def get_target_history(target_id: int, hours: int = 24, limit: int = 2000):
+    if not 1 <= hours <= 24 * 30:  # cap the window at 30 days
+        raise HTTPException(status_code=400, detail="hours must be between 1 and 720")
+    if not 1 <= limit <= 5000:
+        raise HTTPException(status_code=400, detail="limit must be between 1 and 5000")
+
+    conn = get_connection()
+    try:
+        target = conn.execute("SELECT id FROM uptime_targets WHERE id = ?", (target_id,)).fetchone()
+        if target is None:
+            raise HTTPException(status_code=404, detail="Target not found")
+
+        since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+        rows = conn.execute(
+            """
+            SELECT timestamp, is_up, response_ms FROM uptime_checks
+            WHERE target_id = ? AND timestamp >= ?
+            ORDER BY timestamp ASC LIMIT ?
+            """,
+            (target_id, since, limit),
+        ).fetchall()
+    finally:
+        conn.close()
+    return [
+        UptimeCheckOut(timestamp=r["timestamp"], is_up=bool(r["is_up"]), response_ms=r["response_ms"])
+        for r in rows
+    ]
+
+
+@router.get("/targets/{target_id}/incidents", response_model=list[UptimeIncidentOut])
+def get_target_incidents(target_id: int, hours: int = 24 * 7):
+    if not 1 <= hours <= 24 * 30:  # cap the window at 30 days
+        raise HTTPException(status_code=400, detail="hours must be between 1 and 720")
+
+    conn = get_connection()
+    try:
+        target = conn.execute("SELECT id FROM uptime_targets WHERE id = ?", (target_id,)).fetchone()
+        if target is None:
+            raise HTTPException(status_code=404, detail="Target not found")
+
+        since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+        rows = conn.execute(
+            """
+            SELECT timestamp, is_up FROM uptime_checks
+            WHERE target_id = ? AND timestamp >= ?
+            ORDER BY timestamp ASC
+            """,
+            (target_id, since),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    now = datetime.now(timezone.utc)
+    incidents: list[UptimeIncidentOut] = []
+    current_start: str | None = None
+    for row in rows:
+        if not row["is_up"] and current_start is None:
+            current_start = row["timestamp"]
+        elif row["is_up"] and current_start is not None:
+            incidents.append(_build_incident(current_start, row["timestamp"], now))
+            current_start = None
+    if current_start is not None:
+        incidents.append(_build_incident(current_start, None, now))
+    incidents.reverse()  # most recent first
+    return incidents
+
+
+def _build_incident(started_at: str, ended_at: str | None, now: datetime) -> UptimeIncidentOut:
+    def _parse(ts: str) -> datetime:
+        parsed = datetime.fromisoformat(ts)
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+    start_dt = _parse(started_at)
+    end_dt = _parse(ended_at) if ended_at else now
+    duration_seconds = max((end_dt - start_dt).total_seconds(), 0)
+    return UptimeIncidentOut(started_at=started_at, ended_at=ended_at, duration_seconds=duration_seconds)
+
+
 @router.get("/status", response_model=list[UptimeStatusOut])
 def get_uptime_status():
     conn = get_connection()
     try:
         targets = conn.execute("SELECT * FROM uptime_targets ORDER BY name").fetchall()
         now = datetime.now(timezone.utc)
-        since_24h = (now - timedelta(hours=24)).isoformat()
-        since_7d = (now - timedelta(days=7)).isoformat()
-
-        results = []
-        for t in targets:
-            latest = conn.execute(
-                "SELECT * FROM uptime_checks WHERE target_id = ? ORDER BY timestamp DESC LIMIT 1",
-                (t["id"],),
-            ).fetchone()
-            state, last_checked, response_ms = _resolve_state(latest, now)
-            results.append(
-                UptimeStatusOut(
-                    target=_row_to_target(t),
-                    state=state,
-                    last_checked=last_checked,
-                    response_ms=response_ms,
-                    sla_24h_pct=_compute_sla(conn, t["id"], since_24h),
-                    sla_7d_pct=_compute_sla(conn, t["id"], since_7d),
-                )
-            )
-        return results
+        return [_status_for_target(conn, t, now) for t in targets]
     finally:
         conn.close()

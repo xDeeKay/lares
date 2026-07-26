@@ -20,6 +20,16 @@ def get_connection() -> sqlite3.Connection:
     return conn
 
 
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, coltype: str) -> None:
+    """Idempotently add a column to an already-shipped table. SQLite has no
+    ADD COLUMN IF NOT EXISTS, so check PRAGMA table_info first. table/column
+    are always internal literals (never user input), so the f-string here
+    carries no injection risk."""
+    existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in existing:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
+
+
 def init_db() -> None:
     conn = get_connection()
     try:
@@ -145,6 +155,12 @@ def init_db() -> None:
             )
             """
         )
+        # Added after the initial Phase 4 ship: per-target overrides for the
+        # global poll interval/timeout. NULL means "use the collector's
+        # global default." ALTER TABLE (not part of the CREATE above) since
+        # uptime_targets already exists on deployed installs.
+        _ensure_column(conn, "uptime_targets", "check_interval_seconds", "INTEGER")
+        _ensure_column(conn, "uptime_targets", "check_timeout_seconds", "INTEGER")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS uptime_checks (

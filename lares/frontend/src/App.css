@@ -88,3 +88,12 @@
   background: color-mix(in srgb, var(--bronze) 20%, transparent);
   color: var(--bronze);
 }
+
+/* Stronger bronze than --muted: used for "pending" (a target has started
+ * failing but hasn't crossed the debounce threshold to a confirmed down
+ * yet), which genuinely wants attention, unlike stale/unknown's more
+ * neutral "no fresh data" meaning. */
+.status-badge--warning {
+  background: color-mix(in srgb, var(--bronze) 35%, transparent);
+  color: var(--bronze);
+}

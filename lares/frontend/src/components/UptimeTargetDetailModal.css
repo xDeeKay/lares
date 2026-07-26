@@ -1,0 +1,60 @@
+.uptime-detail__header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.uptime-detail__subtitle {
+  font-family: var(--sans);
+  font-weight: 400;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  margin-left: 0.5rem;
+}
+
+.uptime-detail__chart {
+  margin-top: 1rem;
+  height: 240px;
+}
+
+.uptime-detail__incidents-title {
+  margin-top: 1.5rem;
+  margin-bottom: 0.5rem;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.uptime-detail__incidents {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 30vh;
+  overflow: auto;
+}
+
+.uptime-detail__incident {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.4rem 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.85rem;
+}
+
+.uptime-detail__incident:last-child {
+  border-bottom: none;
+}
+
+.uptime-detail__incident-duration {
+  color: var(--danger-badge-fg);
+  white-space: nowrap;
+}
+
+.uptime-detail__actions {
+  margin-top: 1.25rem;
+  display: flex;
+  justify-content: flex-end;
+}

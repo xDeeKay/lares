@@ -8,6 +8,8 @@ import type {
   DiskConfig,
   DiskInfo,
   SystemMetric,
+  UptimeCheck,
+  UptimeIncident,
   UptimeStatus,
   UptimeTarget,
   UptimeTargetType,
@@ -165,19 +167,35 @@ export interface UptimeTargetInput {
   target_type: UptimeTargetType;
   address: string;
   enabled?: boolean;
+  check_interval_seconds?: number | null;
+  check_timeout_seconds?: number | null;
+}
+
+export interface UptimeTargetPatch extends Partial<UptimeTargetInput> {
+  clear_check_interval?: boolean;
+  clear_check_timeout?: boolean;
 }
 
 export function createUptimeTarget(target: UptimeTargetInput): Promise<UptimeTarget> {
   return postJSON<UptimeTarget>('/api/uptime/targets', target);
 }
 
-export function updateUptimeTarget(
-  id: number,
-  patch: Partial<UptimeTargetInput>,
-): Promise<UptimeTarget> {
+export function updateUptimeTarget(id: number, patch: UptimeTargetPatch): Promise<UptimeTarget> {
   return patchJSON<UptimeTarget>(`/api/uptime/targets/${id}`, patch);
 }
 
 export function deleteUptimeTarget(id: number): Promise<void> {
   return deleteRequest<void>(`/api/uptime/targets/${id}`);
+}
+
+export function checkUptimeTargetNow(id: number): Promise<UptimeStatus> {
+  return postJSON<UptimeStatus>(`/api/uptime/targets/${id}/check`, {});
+}
+
+export function getUptimeTargetHistory(id: number, hours = 24): Promise<UptimeCheck[]> {
+  return getJSON<UptimeCheck[]>(`/api/uptime/targets/${id}/history?hours=${hours}`);
+}
+
+export function getUptimeTargetIncidents(id: number, hours = 24 * 7): Promise<UptimeIncident[]> {
+  return getJSON<UptimeIncident[]>(`/api/uptime/targets/${id}/incidents?hours=${hours}`);
 }
