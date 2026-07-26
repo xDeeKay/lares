@@ -129,6 +129,7 @@ export function Devices() {
           <input
             type="text"
             placeholder={settings?.effective_cidr ?? 'auto-detect'}
+            title="One or more space-separated ranges, e.g. 192.168.1.0/24 192.168.4.0/24"
             value={cidrInput}
             onChange={(e) => setCidrInput(e.target.value)}
           />

@@ -17,7 +17,6 @@ import re
 import signal
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 
 import nmap
 import psutil
@@ -29,7 +28,12 @@ logger = logging.getLogger(__name__)
 TICK_SECONDS = float(os.environ.get("LARES_LAN_TICK_SECONDS", 5))
 DEFAULT_SCAN_INTERVAL_SECONDS = 300
 
-_ROUTE_PATH = Path("/proc/net/route")
+# Interfaces excluded from auto-detection: a Pi running several Umbrel apps
+# inevitably has plenty of these (docker0, one veth per container, the
+# umbrel_main_network bridge, ...), and they're internal container networks,
+# not real LAN segments. Scanning them would just surface other containers'
+# internal IPs instead of actual devices.
+_EXCLUDED_INTERFACE_PREFIXES = ("lo", "docker", "veth", "br-", "virbr", "tun", "tap", "wg", "cni")
 
 _NMAP_ERROR_WARNED = False
 _SUBNET_DETECT_WARNED = False
@@ -50,48 +54,35 @@ _INSERT_SIGHTING_SQL = """
 """
 
 
-def _default_interface() -> str | None:
-    """Parses /proc/net/route (kernel routing table) for the default route
-    (Destination == 00000000), returning its interface name. This container
-    runs with network_mode: host, so /proc/net/route is the host's own real
-    routing table, not an isolated one, unlike disk.py's /host/proc/1/mountinfo
-    bind-mount trick (that trick exists only to see past a container's own
-    network namespace, which host networking already removes here)."""
-    try:
-        with _ROUTE_PATH.open() as f:
-            lines = f.readlines()[1:]
-    except OSError as exc:
-        logger.warning("could not read %s: %s", _ROUTE_PATH, type(exc).__name__)
-        return None
-    for line in lines:
-        fields = line.split()
-        if len(fields) < 2:
-            continue
-        iface, destination = fields[0], fields[1]
-        if destination == "00000000":
-            return iface
-    return None
-
-
-def detect_cidr() -> str | None:
-    """Best-effort local subnet detection: the default-route interface's
-    IPv4 address + netmask, via psutil (already a project dependency)."""
+def detect_cidrs() -> list[str]:
+    """Every directly-connected IPv4 subnet on a non-virtual interface, via
+    psutil (already a project dependency), not just the interface on the
+    default route. A Pi that also hosts its own WiFi access point for other
+    devices, a real home-lab setup, has its own subnet on that interface,
+    distinct from the main router's LAN reached via eth0; a default-route-only
+    detection would silently never scan it, missing every device connected to
+    that AP."""
     global _SUBNET_DETECT_WARNED
-    iface = _default_interface()
-    if iface is None:
-        return None
-    for addr in psutil.net_if_addrs().get(iface, []):
-        if addr.family.name != "AF_INET":
+    cidrs: list[str] = []
+    for iface, addrs in psutil.net_if_addrs().items():
+        if iface.startswith(_EXCLUDED_INTERFACE_PREFIXES):
             continue
-        try:
-            network = ipaddress.ip_network(f"{addr.address}/{addr.netmask}", strict=False)
-        except ValueError:
-            continue
-        return str(network)
-    if not _SUBNET_DETECT_WARNED:
-        logger.warning("no IPv4 address found on default interface %s", iface)
+        for addr in addrs:
+            if addr.family.name != "AF_INET" or not addr.netmask:
+                continue
+            try:
+                network = ipaddress.ip_network(f"{addr.address}/{addr.netmask}", strict=False)
+            except ValueError:
+                continue
+            if network.prefixlen >= 31:  # point-to-point/no real subnet to scan
+                continue
+            cidr = str(network)
+            if cidr not in cidrs:
+                cidrs.append(cidr)
+    if not cidrs and not _SUBNET_DETECT_WARNED:
+        logger.warning("no usable IPv4 subnet found on any non-virtual interface")
         _SUBNET_DETECT_WARNED = True
-    return None
+    return cidrs
 
 
 def scan(cidr: str) -> list[dict]:
@@ -158,7 +149,10 @@ def record_scan(conn, results: list[dict]) -> None:
 
 def run_scan_cycle(conn, settings) -> None:
     global _NMAP_ERROR_WARNED
-    cidr = settings["cidr"] or detect_cidr()
+    # nmap accepts multiple space-separated target specs in one invocation
+    # (`nmap -sn 192.168.1.0/24 192.168.4.0/24`), so covering every detected
+    # subnet is just a matter of joining them, no per-subnet scan needed.
+    cidr = settings["cidr"] or " ".join(detect_cidrs()) or None
     now_iso = datetime.now(timezone.utc).isoformat()
 
     if cidr is None:
