@@ -39,12 +39,19 @@ DEFAULT_SCAN_INTERVAL_SECONDS = 300
 # manually restarted.
 SCAN_TIMEOUT_SECONDS = float(os.environ.get("LARES_LAN_SCAN_TIMEOUT_SECONDS", 120))
 
-# Interfaces excluded from auto-detection: a Pi running several Umbrel apps
-# inevitably has plenty of these (docker0, one veth per container, the
-# umbrel_main_network bridge, ...), and they're internal container networks,
-# not real LAN segments. Scanning them would just surface other containers'
-# internal IPs instead of actual devices.
-_EXCLUDED_INTERFACE_PREFIXES = ("lo", "docker", "veth", "br-", "virbr", "tun", "tap", "wg", "cni")
+# Only interfaces that look like real network hardware are auto-scanned:
+# traditional/predictable Ethernet and WiFi names (eth0, end0, enp0s3,
+# wlan0, wlp2s0, ...) plus a Pi-hosted-AP virtual interface (uap0/ap0). This
+# is an allowlist, not a denylist of virtual interface names, after a real
+# Umbrel Pi's full interface list (`ip -brief addr show`) turned up more
+# virtual interfaces than any denylist could reasonably keep enumerating:
+# docker0, several per-project br-* bridges, a dozen veth* pairs, tailscale0,
+# and a DOWN "dind0" (Docker-in-Docker) holding an entire /16 that a
+# denylist of expected names completely missed, blowing scan time up to
+# 65,536 addresses and hitting SCAN_TIMEOUT_SECONDS every cycle. An
+# allowlist doesn't need to anticipate every VPN/container tool's naming
+# scheme in advance.
+_REAL_INTERFACE_RE = re.compile(r"^(eth|en|wl|ww|uap|ap)")
 
 _SUBNET_DETECT_WARNED = False
 
@@ -65,17 +72,21 @@ _INSERT_SIGHTING_SQL = """
 
 
 def detect_cidrs() -> list[str]:
-    """Every directly-connected IPv4 subnet on a non-virtual interface, via
-    psutil (already a project dependency), not just the interface on the
+    """Every directly-connected IPv4 subnet on a real, up hardware interface,
+    via psutil (already a project dependency), not just the interface on the
     default route. A Pi that also hosts its own WiFi access point for other
-    devices, a real home-lab setup, has its own subnet on that interface,
-    distinct from the main router's LAN reached via eth0; a default-route-only
-    detection would silently never scan it, missing every device connected to
-    that AP."""
+    devices, a real home-lab setup, has its own subnet on that interface
+    (confirmed in practice: NetworkManager's shared-connection default,
+    10.42.0.0/24), distinct from the main router's LAN reached via the
+    onboard Ethernet; a default-route-only detection would silently never
+    scan it, missing every device connected to that AP."""
     global _SUBNET_DETECT_WARNED
     cidrs: list[str] = []
+    stats = psutil.net_if_stats()
     for iface, addrs in psutil.net_if_addrs().items():
-        if iface.startswith(_EXCLUDED_INTERFACE_PREFIXES):
+        if not _REAL_INTERFACE_RE.match(iface):
+            continue
+        if not stats.get(iface) or not stats[iface].isup:
             continue
         for addr in addrs:
             if addr.family.name != "AF_INET" or not addr.netmask:
