@@ -61,4 +61,4 @@ All state lives under the single mounted volume, in one SQLite database (`lares.
 
 ## Status
 
-Early. System monitoring, disk storage, container control, and single-password auth are built and running in production on the maintainer's own Pi. Uptime monitoring, LAN/BLE device discovery, WAN monitoring, and alerting are planned but not yet built, see the project's own build-phase notes for the current roadmap.
+Early. System monitoring, disk storage, container control, uptime monitoring, and single-password auth are built and running in production on the maintainer's own Pi. LAN/BLE device discovery, WAN monitoring, and alerting are planned but not yet built, see the project's own build-phase notes for the current roadmap.
