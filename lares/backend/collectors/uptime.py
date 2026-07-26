@@ -140,61 +140,109 @@ def collect_sample(target) -> dict | None:
     }
 
 
-def collect_concurrent(targets: list) -> list[dict]:
-    """Runs collect_sample for every due target in parallel, so one slow or
-    hanging check can't delay the others.
+def collect_sample_bounded(target, buffer_seconds: float = 2.0) -> dict | None:
+    """Runs collect_sample for one target with a hard wall-clock bound, for
+    callers (like a synchronous API request handler) that can't afford to
+    block indefinitely on e.g. a hanging DNS resolution (which none of the
+    checkers' own `timeout` params actually bound, since getaddrinfo isn't
+    covered by socket/requests timeouts). Same daemon-thread approach as the
+    collector's own scheduling: a straggler thread is left running in the
+    background past the deadline rather than killed, and its result is
+    simply discarded when it eventually finishes."""
+    result_queue: queue.Queue = queue.Queue()
 
-    Uses raw daemon threads + a shared queue rather than ThreadPoolExecutor:
-    a pool's context manager (or explicit shutdown(wait=True)) blocks on
-    __exit__ until every submitted thread finishes, which would silently
-    undo the whole point of this function (confirmed by an actual timing
-    test: a per-future timeout inside the loop did not stop the overall
-    call from blocking on a slow target for its full duration). Daemon
-    threads carry no such join-on-exit obligation: a straggler simply
-    keeps running in the background past this function's own deadline,
-    and its result is discarded when it eventually finishes.
+    def _worker() -> None:
+        result_queue.put(collect_sample(target))
+
+    threading.Thread(target=_worker, daemon=True).start()
+    try:
+        return result_queue.get(timeout=_target_timeout(target) + buffer_seconds)
+    except queue.Empty:
+        logger.warning("manual check for target %s did not complete before the deadline", target["name"])
+        return {
+            "target_id": target["id"],
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "is_up": False,
+            "response_ms": None,
+        }
+
+
+class _PendingChecks:
+    """Tracks in-flight daemon-thread checks across scheduling ticks.
+
+    The collector's very first concurrency fix ran every due target's check
+    in parallel, but still waited inline for the whole batch before the
+    scheduling loop could move on: a shared deadline meant one target with
+    an unusually large check_timeout_seconds override could stall every
+    other target's due-check for that long too (confirmed by review, not
+    just theoretical). This tracker instead separates "spawn a check" from
+    "collect its result": the loop spawns a thread for anything newly due,
+    then drains whatever's already finished without waiting, and gives up
+    on anything that's overrun its own deadline. A slow target's thread can
+    keep running across many ticks in the background without ever blocking
+    the loop from re-evaluating every other target on schedule.
     """
-    if not targets:
-        return []
 
-    results: queue.Queue = queue.Queue()
+    def __init__(self) -> None:
+        self._queue: queue.Queue = queue.Queue()
+        self._since: dict[int, float] = {}
+        self._targets: dict[int, object] = {}
 
-    def _worker(target) -> None:
-        results.put((target["id"], collect_sample(target)))
+    def pending_ids(self) -> set:
+        return set(self._since)
 
-    for t in targets:
-        threading.Thread(target=_worker, args=(t,), daemon=True).start()
+    def is_pending(self, target_id: int) -> bool:
+        return target_id in self._since
 
-    deadline = time.monotonic() + max(_target_timeout(t) for t in targets) + 2
-    received: dict[int, dict | None] = {}
-    while len(received) < len(targets):
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            break
-        try:
-            target_id, sample = results.get(timeout=min(remaining, 0.5))
-            received[target_id] = sample
-        except queue.Empty:
-            continue
+    def forget(self, target_id: int) -> None:
+        """Drop bookkeeping for a target that's been deleted or disabled.
+        Its thread, if still running, is orphaned but harmless."""
+        self._since.pop(target_id, None)
+        self._targets.pop(target_id, None)
 
-    samples: list[dict] = []
-    for t in targets:
-        if t["id"] in received:
-            sample = received[t["id"]]
-        else:
-            logger.warning(
-                "check for target %s did not complete before the deadline, recording down",
-                t["name"],
-            )
-            sample = {
-                "target_id": t["id"],
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "is_up": False,
-                "response_ms": None,
-            }
-        if sample is not None:
-            samples.append(sample)
-    return samples
+    def spawn(self, target, now: float) -> None:
+        self._since[target["id"]] = now
+        self._targets[target["id"]] = target
+        threading.Thread(target=self._worker, args=(target,), daemon=True).start()
+
+    def _worker(self, target) -> None:
+        self._queue.put((target["id"], collect_sample(target)))
+
+    def drain(self) -> list[dict]:
+        """Non-blocking: collects whatever results have already arrived."""
+        samples: list[dict] = []
+        while True:
+            try:
+                target_id, sample = self._queue.get_nowait()
+            except queue.Empty:
+                break
+            self._since.pop(target_id, None)
+            self._targets.pop(target_id, None)
+            if sample is not None:
+                samples.append(sample)
+        return samples
+
+    def expire(self, now: float) -> list[dict]:
+        """Give up on anything that's run past its own timeout, recording a
+        synthetic down sample and freeing its target to be checked again,
+        rather than leaving it looking permanently "in flight"."""
+        samples: list[dict] = []
+        for target_id in list(self._since):
+            target = self._targets[target_id]
+            if now - self._since[target_id] > _target_timeout(target) + 2:
+                logger.warning(
+                    "check for target %s did not complete before its deadline, recording down",
+                    target["name"],
+                )
+                samples.append({
+                    "target_id": target_id,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "is_up": False,
+                    "response_ms": None,
+                })
+                del self._since[target_id]
+                del self._targets[target_id]
+        return samples
 
 
 def flush(conn, buffer: list[dict]) -> None:
@@ -214,6 +262,7 @@ def run(
     conn = get_connection()
     buffer: list[dict] = []
     last_checked: dict[int, float] = {}
+    pending = _PendingChecks()
     stop = False
 
     def _handle_signal(signum, frame):
@@ -235,19 +284,31 @@ def run(
 
             # Drop bookkeeping for targets that are no longer enabled (or no
             # longer exist), so a deleted-then-recreated target that happens
-            # to reuse an old rowid doesn't inherit a stale last-checked time.
+            # to reuse an old rowid doesn't inherit stale scheduling state.
             current_ids = {t["id"] for t in targets}
             for stale_id in [tid for tid in last_checked if tid not in current_ids]:
                 del last_checked[stale_id]
+            for stale_id in pending.pending_ids() - current_ids:
+                pending.forget(stale_id)
 
-            due = [t for t in targets if now - last_checked.get(t["id"], 0) >= _target_interval(t)]
+            # A target already mid-check is skipped here, not re-spawned;
+            # its result (or eventual expiry) is picked up below regardless
+            # of how many ticks that takes.
+            due = [
+                t for t in targets
+                if not pending.is_pending(t["id"]) and now - last_checked.get(t["id"], 0) >= _target_interval(t)
+            ]
             for t in due:
                 last_checked[t["id"]] = now
+                pending.spawn(t, now)
 
-            if due:
-                samples = collect_concurrent(due)
-                buffer.extend(samples)
-                logger.debug("checked %d target(s), %d sample(s) recorded", len(due), len(samples))
+            new_samples = pending.drain() + pending.expire(now)
+            buffer.extend(new_samples)
+            if due or new_samples:
+                logger.debug(
+                    "spawned %d check(s), recorded %d sample(s) this tick",
+                    len(due), len(new_samples),
+                )
 
             if time.monotonic() - last_flush >= flush_interval:
                 flush(conn, buffer)

@@ -6,7 +6,7 @@ from urllib.parse import urlparse
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from backend.collectors.uptime import collect_sample
+from backend.collectors.uptime import collect_sample_bounded
 from backend.db import get_connection
 
 router = APIRouter(prefix="/api/uptime", tags=["uptime"])
@@ -320,14 +320,23 @@ def check_target_now(target_id: int):
     """Runs one check immediately against the live target, bypassing the
     collector's own schedule, and records the result like a normal poll
     would. Useful right after adding a target instead of waiting out the
-    stale window to see whether it's actually reachable."""
+    stale window to see whether it's actually reachable.
+
+    Uses collect_sample_bounded (not collect_sample directly): this runs
+    inline in a synchronous request handler, which FastAPI dispatches to
+    its shared default thread pool, so a single hung DNS resolution here
+    (not bounded by the checker's own timeout, only connect/read are)
+    could otherwise pin one of a limited number of worker threads well
+    past the configured timeout and, with a couple of overlapping requests,
+    starve other endpoints of pool capacity.
+    """
     conn = get_connection()
     try:
         target = conn.execute("SELECT * FROM uptime_targets WHERE id = ?", (target_id,)).fetchone()
         if target is None:
             raise HTTPException(status_code=404, detail="Target not found")
 
-        sample = collect_sample(target)
+        sample = collect_sample_bounded(target)
         if sample is not None:
             conn.execute(_INSERT_CHECK_SQL, sample)
             conn.commit()
@@ -367,6 +376,9 @@ def get_target_history(target_id: int, hours: int = 24, limit: int = 2000):
     ]
 
 
+MAX_INCIDENT_ROWS = 20000
+
+
 @router.get("/targets/{target_id}/incidents", response_model=list[UptimeIncidentOut])
 def get_target_incidents(target_id: int, hours: int = 24 * 7):
     if not 1 <= hours <= 24 * 30:  # cap the window at 30 days
@@ -379,14 +391,21 @@ def get_target_incidents(target_id: int, hours: int = 24 * 7):
             raise HTTPException(status_code=404, detail="Target not found")
 
         since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
-        rows = conn.execute(
+        # A target with a short custom check_interval_seconds over the full
+        # 30-day window could otherwise mean scanning hundreds of thousands
+        # of rows in Python. Cap to the most recent MAX_INCIDENT_ROWS (query
+        # DESC + LIMIT, then reverse back to ascending) rather than the
+        # oldest rows in the window, since recent incidents are what this
+        # endpoint is actually for.
+        rows_desc = conn.execute(
             """
             SELECT timestamp, is_up FROM uptime_checks
             WHERE target_id = ? AND timestamp >= ?
-            ORDER BY timestamp ASC
+            ORDER BY timestamp DESC LIMIT ?
             """,
-            (target_id, since),
+            (target_id, since, MAX_INCIDENT_ROWS),
         ).fetchall()
+        rows = list(reversed(rows_desc))
     finally:
         conn.close()
 

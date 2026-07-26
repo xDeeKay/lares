@@ -24,10 +24,22 @@ def _ensure_column(conn: sqlite3.Connection, table: str, column: str, coltype: s
     """Idempotently add a column to an already-shipped table. SQLite has no
     ADD COLUMN IF NOT EXISTS, so check PRAGMA table_info first. table/column
     are always internal literals (never user input), so the f-string here
-    carries no injection risk."""
+    carries no injection risk.
+
+    init_db() runs from five processes at once at container startup (the API
+    and all four collectors), so the check-then-add here is a real race: two
+    processes can both see the column missing before either commits its own
+    ALTER TABLE, and the second one's ALTER then raises "duplicate column
+    name". That's the expected outcome of losing the race, not a real
+    problem, so it's swallowed; any other OperationalError still surfaces.
+    """
     existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
     if column not in existing:
-        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
+        try:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column name" not in str(exc):
+                raise
 
 
 def init_db() -> None:
