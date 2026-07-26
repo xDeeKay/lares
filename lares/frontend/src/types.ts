@@ -69,3 +69,25 @@ export interface AuthStatus {
 export interface AuthToken {
   token: string;
 }
+
+export type UptimeTargetType = 'http' | 'tcp' | 'ping';
+
+export interface UptimeTarget {
+  id: number;
+  name: string;
+  target_type: UptimeTargetType;
+  address: string;
+  enabled: boolean;
+  created_at: string;
+}
+
+export type UptimeState = 'up' | 'down' | 'stale' | 'unknown';
+
+export interface UptimeStatus {
+  target: UptimeTarget;
+  state: UptimeState;
+  last_checked: string | null;
+  response_ms: number | null;
+  sla_24h_pct: number | null;
+  sla_7d_pct: number | null;
+}

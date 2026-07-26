@@ -8,6 +8,9 @@ import type {
   DiskConfig,
   DiskInfo,
   SystemMetric,
+  UptimeStatus,
+  UptimeTarget,
+  UptimeTargetType,
 } from './types';
 
 export class ApiError extends Error {
@@ -78,6 +81,22 @@ function postJSON<T>(path: string, body: unknown): Promise<T> {
   }).then((res) => handleResponse<T>(res, tokenAtRequest));
 }
 
+function patchJSON<T>(path: string, body: unknown): Promise<T> {
+  const tokenAtRequest = authToken;
+  return fetch(path, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify(body),
+  }).then((res) => handleResponse<T>(res, tokenAtRequest));
+}
+
+function deleteRequest<T>(path: string): Promise<T> {
+  const tokenAtRequest = authToken;
+  return fetch(path, { method: 'DELETE', headers: authHeaders() }).then((res) =>
+    handleResponse<T>(res, tokenAtRequest),
+  );
+}
+
 export function getAuthStatus(): Promise<AuthStatus> {
   return getJSON<AuthStatus>('/api/auth/status');
 }
@@ -131,4 +150,34 @@ export function postContainerAction(
     `/api/containers/${encodeURIComponent(containerId)}/${action}`,
     { confirm: true },
   );
+}
+
+export function getUptimeStatus(): Promise<UptimeStatus[]> {
+  return getJSON<UptimeStatus[]>('/api/uptime/status');
+}
+
+export function getUptimeTargets(): Promise<UptimeTarget[]> {
+  return getJSON<UptimeTarget[]>('/api/uptime/targets');
+}
+
+export interface UptimeTargetInput {
+  name: string;
+  target_type: UptimeTargetType;
+  address: string;
+  enabled?: boolean;
+}
+
+export function createUptimeTarget(target: UptimeTargetInput): Promise<UptimeTarget> {
+  return postJSON<UptimeTarget>('/api/uptime/targets', target);
+}
+
+export function updateUptimeTarget(
+  id: number,
+  patch: Partial<UptimeTargetInput>,
+): Promise<UptimeTarget> {
+  return patchJSON<UptimeTarget>(`/api/uptime/targets/${id}`, patch);
+}
+
+export function deleteUptimeTarget(id: number): Promise<void> {
+  return deleteRequest<void>(`/api/uptime/targets/${id}`);
 }

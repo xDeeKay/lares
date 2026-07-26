@@ -11,5 +11,6 @@ set -e
 python -m backend.collectors.system &
 python -m backend.collectors.disk &
 python -m backend.collectors.containers &
+python -m backend.collectors.uptime &
 
 exec uvicorn backend.main:app --host 0.0.0.0 --port 8000

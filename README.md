@@ -28,6 +28,7 @@ Named after the Lares of Roman household religion: guardian spirits believed to 
 | Storage | Per-drive usage (not just an aggregate), so a multi-drive setup is visible at a glance. Reads the host's real mount table from inside the container, deduped by device and filtered to real filesystems only |
 | Containers | Live status for every Docker container on the host, with Stop/Restart actions (confirmation required) and a tailable log viewer |
 | Update checker | Flags when a running container's image has a newer version available on its registry (Docker Hub only for now), so updates aren't discovered by accident |
+| Uptime | Configurable HTTP/TCP/ping checks against services you point it at, with a live status page and 24h/7d uptime % rollups computed from the check history |
 
 ## Auth
 

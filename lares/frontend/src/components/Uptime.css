@@ -1,0 +1,67 @@
+.uptime__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.uptime__header h2 {
+  margin: 0;
+}
+
+.uptime__table-wrap {
+  margin-top: 1rem;
+  overflow-x: auto;
+  /* Same overflow-spec gotcha as containers: pairing overflow-x: auto with
+     a "visible" overflow-y makes the browser also treat overflow-y as
+     auto, creating a pointless scroll region on this element. */
+  overflow-y: hidden;
+}
+
+.uptime__table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.uptime__table th:nth-child(3) {
+  width: 12%;
+}
+
+.uptime__table th:nth-child(7) {
+  width: 165px;
+}
+
+.uptime__table th {
+  text-align: left;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  padding: 0 0.5rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.uptime__table td {
+  padding: 0.6rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+.uptime__table tr:last-child td {
+  border-bottom: none;
+}
+
+.uptime__type {
+  text-transform: uppercase;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.uptime__actions {
+  display: flex;
+  gap: 0.4rem;
+  justify-content: flex-end;
+  white-space: nowrap;
+}

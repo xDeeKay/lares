@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 
 from backend.auth import require_auth
 from backend.db import init_db
-from backend.routers import auth, containers, disk, system
+from backend.routers import auth, containers, disk, system, uptime
 
 
 @asynccontextmanager
@@ -29,6 +29,7 @@ app = FastAPI(title="Lares", version="0.1.0", lifespan=lifespan)
 app.include_router(system.router, dependencies=[Depends(require_auth)])
 app.include_router(disk.router, dependencies=[Depends(require_auth)])
 app.include_router(containers.router, dependencies=[Depends(require_auth)])
+app.include_router(uptime.router, dependencies=[Depends(require_auth)])
 app.include_router(auth.router)
 
 

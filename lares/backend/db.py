@@ -133,6 +133,33 @@ def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires_at "
             "ON auth_sessions (expires_at)"
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS uptime_targets (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                target_type TEXT NOT NULL,
+                address TEXT NOT NULL,
+                enabled BOOLEAN NOT NULL DEFAULT 1,
+                created_at DATETIME NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS uptime_checks (
+                id INTEGER PRIMARY KEY,
+                target_id INTEGER NOT NULL,
+                timestamp DATETIME NOT NULL,
+                is_up BOOLEAN NOT NULL,
+                response_ms INTEGER
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_uptime_checks_target_id_timestamp "
+            "ON uptime_checks (target_id, timestamp)"
+        )
         conn.commit()
     finally:
         conn.close()

@@ -2,6 +2,7 @@ import { Header } from './components/Header';
 import { SystemStats } from './components/SystemStats';
 import { DiskStorage } from './components/DiskStorage';
 import { Containers } from './components/Containers';
+import { Uptime } from './components/Uptime';
 import { PasswordGate } from './auth/PasswordGate';
 import { useAuth } from './auth/AuthContext';
 import './App.css';
@@ -26,6 +27,7 @@ function App() {
         <SystemStats />
         <DiskStorage />
         <Containers />
+        <Uptime />
       </main>
     </>
   );
