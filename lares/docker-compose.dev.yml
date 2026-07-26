@@ -17,6 +17,20 @@ services:
     networks:
       - umbrel_main_network
 
+  # See docker-compose.yml's lan-scanner service for why this needs its own
+  # container with network_mode: host.
+  lan-scanner:
+    build: .
+    command: ["python", "-m", "backend.collectors.lan"]
+    restart: unless-stopped
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    volumes:
+      - /home/umbrel/umbrel/app-data/lares/data:/app/backend/data
+      - /etc/localtime:/etc/localtime:ro
+
 networks:
   umbrel_main_network:
     external: true

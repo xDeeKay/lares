@@ -16,3 +16,22 @@ services:
       # isolated filesystem. See backend/collectors/disk.py's docstring.
       - /:/host:ro
       - /proc:/host/proc:ro
+
+  # Same image as web, different command: a real ARP scan needs L2 visibility
+  # into the physical LAN, which a bridge-network container (like web, above)
+  # can't have. network_mode: host gives it that directly, so no /host bind
+  # mount is needed here the way disk.py needs one, see
+  # backend/collectors/lan.py's docstring. Not routed to by app_proxy, so it
+  # doesn't join umbrel_main_network (and couldn't alongside network_mode: host
+  # anyway, Docker doesn't allow combining the two).
+  lan-scanner:
+    image: xdeekay/lares:0.1.0@sha256:11c0649e34c9e1a3ead1ce801cf379e5ae9b25aa0a2e15e2c4fe717b59c41816
+    command: ["python", "-m", "backend.collectors.lan"]
+    restart: unless-stopped
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    volumes:
+      - ${APP_DATA_DIR}/data:/app/backend/data
+      - /etc/localtime:/etc/localtime:ro

@@ -3,6 +3,7 @@ import { SystemStats } from './components/SystemStats';
 import { DiskStorage } from './components/DiskStorage';
 import { Containers } from './components/Containers';
 import { Uptime } from './components/Uptime';
+import { Devices } from './components/Devices';
 import { PasswordGate } from './auth/PasswordGate';
 import { useAuth } from './auth/AuthContext';
 import './App.css';
@@ -28,6 +29,7 @@ function App() {
         <DiskStorage />
         <Containers />
         <Uptime />
+        <Devices />
       </main>
     </>
   );

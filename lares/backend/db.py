@@ -6,6 +6,7 @@ locking each other out.
 """
 
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 DB_PATH = Path(__file__).parent / "data" / "lares.db"
@@ -187,6 +188,65 @@ def init_db() -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_uptime_checks_target_id_timestamp "
             "ON uptime_checks (target_id, timestamp)"
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS devices (
+                id INTEGER PRIMARY KEY,
+                mac_address TEXT UNIQUE NOT NULL,
+                device_type TEXT NOT NULL,
+                vendor TEXT,
+                hostname TEXT,
+                last_ip TEXT,
+                category TEXT NOT NULL DEFAULT 'unknown',
+                nickname TEXT,
+                first_seen DATETIME NOT NULL,
+                last_seen DATETIME NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_devices_last_seen ON devices (last_seen)"
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS device_sightings (
+                id INTEGER PRIMARY KEY,
+                mac_address TEXT NOT NULL,
+                timestamp DATETIME NOT NULL,
+                ip_address TEXT,
+                rssi INTEGER,
+                is_present BOOLEAN NOT NULL DEFAULT 1
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_device_sightings_mac_timestamp "
+            "ON device_sightings (mac_address, timestamp)"
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS lan_scan_settings (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                cidr TEXT,
+                effective_cidr TEXT,
+                scan_interval_seconds INTEGER NOT NULL DEFAULT 300,
+                last_scan_at DATETIME,
+                force_scan_requested_at DATETIME,
+                updated_at DATETIME NOT NULL
+            )
+            """
+        )
+        # A default singleton row so GET /api/lan/settings works out of the
+        # box without requiring a first-run setup step, unlike auth_config
+        # which deliberately has no default (no password should exist until
+        # the user sets one).
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO lan_scan_settings (id, scan_interval_seconds, updated_at)
+            VALUES (1, 300, ?)
+            """,
+            (datetime.now(timezone.utc).isoformat(),),
         )
         conn.commit()
     finally:

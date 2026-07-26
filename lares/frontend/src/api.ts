@@ -5,8 +5,12 @@ import type {
   ContainerActionResult,
   ContainerInfo,
   ContainerLogs,
+  Device,
+  DeviceCategory,
+  DeviceSighting,
   DiskConfig,
   DiskInfo,
+  LanScanSettings,
   SystemMetric,
   UptimeCheck,
   UptimeIncident,
@@ -198,4 +202,42 @@ export function getUptimeTargetHistory(id: number, hours = 24): Promise<UptimeCh
 
 export function getUptimeTargetIncidents(id: number, hours = 24 * 7): Promise<UptimeIncident[]> {
   return getJSON<UptimeIncident[]>(`/api/uptime/targets/${id}/incidents?hours=${hours}`);
+}
+
+export function getDevices(): Promise<Device[]> {
+  return getJSON<Device[]>('/api/lan/devices');
+}
+
+export interface DeviceUpdateInput {
+  category?: DeviceCategory;
+  nickname?: string;
+  clear_nickname?: boolean;
+}
+
+export function updateDevice(macAddress: string, patch: DeviceUpdateInput): Promise<Device> {
+  return patchJSON<Device>(`/api/lan/devices/${encodeURIComponent(macAddress)}`, patch);
+}
+
+export function getDeviceSightings(macAddress: string, hours = 24): Promise<DeviceSighting[]> {
+  return getJSON<DeviceSighting[]>(
+    `/api/lan/devices/${encodeURIComponent(macAddress)}/sightings?hours=${hours}`,
+  );
+}
+
+export function getLanSettings(): Promise<LanScanSettings> {
+  return getJSON<LanScanSettings>('/api/lan/settings');
+}
+
+export interface LanScanSettingsInput {
+  cidr?: string | null;
+  scan_interval_seconds?: number;
+  clear_cidr?: boolean;
+}
+
+export function updateLanSettings(patch: LanScanSettingsInput): Promise<LanScanSettings> {
+  return patchJSON<LanScanSettings>('/api/lan/settings', patch);
+}
+
+export function scanLanNow(): Promise<LanScanSettings> {
+  return postJSON<LanScanSettings>('/api/lan/scan-now', {});
 }

@@ -105,3 +105,32 @@ export interface UptimeIncident {
   ended_at: string | null;
   duration_seconds: number;
 }
+
+export type DeviceCategory = 'trusted' | 'iot' | 'guest' | 'unknown';
+export type DeviceState = 'present' | 'absent';
+
+export interface Device {
+  mac_address: string;
+  device_type: string;
+  vendor: string | null;
+  hostname: string | null;
+  last_ip: string | null;
+  category: DeviceCategory;
+  nickname: string | null;
+  first_seen: string;
+  last_seen: string;
+  state: DeviceState;
+}
+
+export interface DeviceSighting {
+  timestamp: string;
+  ip_address: string | null;
+  is_present: boolean;
+}
+
+export interface LanScanSettings {
+  cidr: string | null;
+  effective_cidr: string | null;
+  scan_interval_seconds: number;
+  last_scan_at: string | null;
+}
