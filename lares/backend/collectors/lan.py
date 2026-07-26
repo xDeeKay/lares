@@ -13,6 +13,7 @@ in-process call across containers the way uptime's check-now endpoint has.
 import ipaddress
 import logging
 import os
+import re
 import signal
 import time
 from datetime import datetime, timezone
@@ -98,9 +99,16 @@ def scan(cidr: str) -> list[dict]:
     container has host networking) and returns one dict per live host with a
     resolved MAC address. Hosts without a MAC (nmap couldn't ARP-resolve them,
     e.g. not actually on this L2 segment) are skipped, there's nothing
-    device-identifying to record for them."""
+    device-identifying to record for them.
+
+    Runs the nbstat NSE script alongside the ping scan: reverse-DNS alone
+    (nmap's default naming source) depends on the LAN's router/DNS actually
+    populating PTR records, which many home networks don't do. NetBIOS Name
+    Service gets the real computer name straight from Windows (and most
+    Samba/NAS) boxes regardless of DNS, and nbstat ships with the nmap
+    package already installed, no extra dependency."""
     scanner = nmap.PortScanner()
-    scanner.scan(hosts=cidr, arguments="-sn")
+    scanner.scan(hosts=cidr, arguments="-sn --script nbstat")
     now = datetime.now(timezone.utc).isoformat()
     results = []
     for ip in scanner.all_hosts():
@@ -111,7 +119,7 @@ def scan(cidr: str) -> list[dict]:
         if not mac:
             continue
         vendor = host.get("vendor", {}).get(mac)
-        hostname = next((h["name"] for h in host.get("hostnames", []) if h.get("name")), None)
+        hostname = _extract_hostname(host)
         results.append(
             {
                 "mac_address": mac.upper(),
@@ -122,6 +130,22 @@ def scan(cidr: str) -> list[dict]:
             }
         )
     return results
+
+
+_NBSTAT_NAME_RE = re.compile(r"NetBIOS name:\s*([^\s,]+)")
+
+
+def _extract_hostname(host) -> str | None:
+    reverse_dns = next((h["name"] for h in host.get("hostnames", []) if h.get("name")), None)
+    if reverse_dns:
+        return reverse_dns
+    for script in host.get("hostscript", []):
+        if script.get("id") != "nbstat":
+            continue
+        match = _NBSTAT_NAME_RE.search(script.get("output", ""))
+        if match:
+            return match.group(1)
+    return None
 
 
 def record_scan(conn, results: list[dict]) -> None:
