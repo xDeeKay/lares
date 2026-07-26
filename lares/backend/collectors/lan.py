@@ -13,8 +13,10 @@ in-process call across containers the way uptime's check-now endpoint has.
 import ipaddress
 import logging
 import os
+import queue
 import re
 import signal
+import threading
 import time
 from datetime import datetime, timezone
 
@@ -27,6 +29,15 @@ logger = logging.getLogger(__name__)
 
 TICK_SECONDS = float(os.environ.get("LARES_LAN_TICK_SECONDS", 5))
 DEFAULT_SCAN_INTERVAL_SECONDS = 300
+# Hard backstop around the whole nmap invocation, not just its own
+# --host-timeout below. Confirmed on real hardware: a single host that
+# silently drops NBNS (UDP 137) return traffic instead of sending an ICMP
+# unreachable can leave the underlying nmap subprocess blocked past its own
+# timeout handling, and since this collector is single-threaded with nothing
+# else running concurrently, that hangs the entire loop forever, no more
+# scans, no more force_scan_requested_at handling, until the container is
+# manually restarted.
+SCAN_TIMEOUT_SECONDS = float(os.environ.get("LARES_LAN_SCAN_TIMEOUT_SECONDS", 120))
 
 # Interfaces excluded from auto-detection: a Pi running several Umbrel apps
 # inevitably has plenty of these (docker0, one veth per container, the
@@ -35,7 +46,6 @@ DEFAULT_SCAN_INTERVAL_SECONDS = 300
 # internal IPs instead of actual devices.
 _EXCLUDED_INTERFACE_PREFIXES = ("lo", "docker", "veth", "br-", "virbr", "tun", "tap", "wg", "cni")
 
-_NMAP_ERROR_WARNED = False
 _SUBNET_DETECT_WARNED = False
 
 _UPSERT_DEVICE_SQL = """
@@ -97,9 +107,13 @@ def scan(cidr: str) -> list[dict]:
     populating PTR records, which many home networks don't do. NetBIOS Name
     Service gets the real computer name straight from Windows (and most
     Samba/NAS) boxes regardless of DNS, and nbstat ships with the nmap
-    package already installed, no extra dependency."""
+    package already installed, no extra dependency.
+
+    --host-timeout bounds how long nmap itself will wait on any single
+    unresponsive host (defense in depth alongside _scan_bounded's outer
+    wall-clock timeout below, which is the real backstop)."""
     scanner = nmap.PortScanner()
-    scanner.scan(hosts=cidr, arguments="-sn --script nbstat")
+    scanner.scan(hosts=cidr, arguments="-sn --script nbstat --host-timeout 15s")
     now = datetime.now(timezone.utc).isoformat()
     results = []
     for ip in scanner.all_hosts():
@@ -139,6 +153,40 @@ def _extract_hostname(host) -> str | None:
     return None
 
 
+def _scan_bounded(cidr: str, timeout_seconds: float) -> list[dict]:
+    """Runs scan() with a hard wall-clock bound in a daemon thread, same
+    approach as uptime.py's collect_sample_bounded for the identical class
+    of problem: a hang inside the underlying subprocess that its own
+    timeout arguments don't fully cover. Catches any exception, not just
+    nmap.PortScannerError, since a subprocess/XML-parsing pipeline like this
+    has failure modes that can't all be enumerated up front, and none of
+    them should be allowed to kill this collector's main loop, silently
+    ending LAN scanning entirely rather than just failing one cycle. A
+    straggler thread past the deadline is left running in the background
+    rather than killed; its result is simply discarded when it eventually
+    finishes."""
+    result_queue: queue.Queue = queue.Queue()
+
+    def _worker() -> None:
+        try:
+            result_queue.put(("ok", scan(cidr)))
+        except Exception as exc:
+            result_queue.put(("error", exc))
+
+    threading.Thread(target=_worker, daemon=True).start()
+    try:
+        status, payload = result_queue.get(timeout=timeout_seconds)
+    except queue.Empty:
+        logger.warning(
+            "scan of %s did not complete within %ss, skipping this cycle", cidr, timeout_seconds
+        )
+        return []
+    if status == "error":
+        logger.warning("nmap scan of %s failed: %s", cidr, type(payload).__name__)
+        return []
+    return payload
+
+
 def record_scan(conn, results: list[dict]) -> None:
     if not results:
         return
@@ -148,7 +196,6 @@ def record_scan(conn, results: list[dict]) -> None:
 
 
 def run_scan_cycle(conn, settings) -> None:
-    global _NMAP_ERROR_WARNED
     # nmap accepts multiple space-separated target specs in one invocation
     # (`nmap -sn 192.168.1.0/24 192.168.4.0/24`), so covering every detected
     # subnet is just a matter of joining them, no per-subnet scan needed.
@@ -164,14 +211,7 @@ def run_scan_cycle(conn, settings) -> None:
         conn.commit()
         return
 
-    try:
-        results = scan(cidr)
-    except nmap.PortScannerError as exc:
-        if not _NMAP_ERROR_WARNED:
-            logger.warning("nmap scan of %s failed: %s", cidr, type(exc).__name__)
-            _NMAP_ERROR_WARNED = True
-        results = []
-
+    results = _scan_bounded(cidr, SCAN_TIMEOUT_SECONDS)
     record_scan(conn, results)
     conn.execute(
         """
