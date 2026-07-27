@@ -186,7 +186,17 @@ def discover_ssdp_names(timeout: float = SSDP_TIMEOUT_SECONDS) -> dict[str, str]
     covers every real interface: a Pi-hosted AP subnet is just as real a
     network segment as the main LAN, and a plain unbound socket's multicast
     send would only reach whichever interface the default route happens to
-    pick) and collects each responder's UPnP friendlyName, keyed by IP."""
+    pick) and collects each responder's UPnP friendlyName, keyed by IP.
+
+    ST: upnp:rootdevice specifically, not ssdp:all: confirmed on real
+    hardware that a device advertising several UPnP services at once (e.g. a
+    smart TV's root device plus its separate AVTransport/MediaRenderer
+    services) answers ssdp:all with multiple different LOCATION responses,
+    each with its own friendlyName, one often just the raw model number.
+    Since only the first response per IP is kept and UDP arrival order isn't
+    stable across scans, that made the resolved name flip between scan
+    cycles. Root device only gives one canonical, more human-meaningful
+    name per device."""
     interface_ips = {addr for _iface, addr, _netmask in _real_interface_addrs()}
     if not interface_ips:
         return {}
@@ -196,7 +206,7 @@ def discover_ssdp_names(timeout: float = SSDP_TIMEOUT_SECONDS) -> dict[str, str]
         f"HOST: {SSDP_ADDR[0]}:{SSDP_ADDR[1]}\r\n"
         'MAN: "ssdp:discover"\r\n'
         f"MX: {max(int(timeout), 1)}\r\n"
-        "ST: ssdp:all\r\n"
+        "ST: upnp:rootdevice\r\n"
         "\r\n"
     ).encode("utf-8")
 
