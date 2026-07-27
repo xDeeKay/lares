@@ -77,6 +77,15 @@ _SUBNET_DETECT_WARNED = False
 # non-Windows devices that were never going to answer a NetBIOS query.
 SSDP_ADDR = ("239.255.255.250", 1900)
 SSDP_TIMEOUT_SECONDS = float(os.environ.get("LARES_LAN_SSDP_TIMEOUT_SECONDS", 3))
+# SSDP devices are allowed to randomize their response delay up to the full
+# MX value sent in the M-SEARCH request (here, SSDP_TIMEOUT_SECONDS itself),
+# so listening for exactly that long risks cutting off a response timed
+# right at the edge of that window. Confirmed on real hardware: a listen
+# window with no buffer past MX consistently missed an LG TV's response
+# that a manual test with an extra second of slack caught reliably. Same
+# "buffer past the nominal timeout" pattern as uptime.py's
+# collect_sample_bounded.
+SSDP_LISTEN_BUFFER_SECONDS = 2.0
 MDNS_TIMEOUT_SECONDS = float(os.environ.get("LARES_LAN_MDNS_TIMEOUT_SECONDS", 3))
 MDNS_SERVICE_TYPES = [
     "_googlecast._tcp.local.",
@@ -228,7 +237,7 @@ def discover_ssdp_names(timeout: float = SSDP_TIMEOUT_SECONDS) -> dict[str, str]
                 continue
             sockets.append(sock)
 
-        deadline = time.monotonic() + timeout
+        deadline = time.monotonic() + timeout + SSDP_LISTEN_BUFFER_SECONDS
         while sockets:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
