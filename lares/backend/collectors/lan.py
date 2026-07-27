@@ -15,17 +15,34 @@ import logging
 import os
 import queue
 import re
+import select
 import signal
+import socket
 import threading
 import time
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
+from pathlib import Path
 
 import nmap
 import psutil
+import requests
+from zeroconf import IPVersion, ServiceBrowser, ServiceListener, Zeroconf
 
 from backend.db import get_connection, init_db
 
 logger = logging.getLogger(__name__)
+
+# Bundled fallback for when nmap's own vendor lookup (Config: nmap-mac-prefixes)
+# comes back blank for a real (non-randomized) OUI it just doesn't happen to
+# carry. Trimmed from the IEEE public OUI registry (standards-oui.ieee.org) to
+# just the 24-bit prefix and organization name, no addresses. Lives outside
+# backend/data/ deliberately: that directory is volume-mounted at runtime (see
+# docker-compose.yml), so a file bundled into the image there would be shadowed
+# by the empty host-side mount instead of actually being readable.
+_OUI_VENDORS_PATH = Path(__file__).parent.parent / "oui" / "oui_vendors.txt"
+_oui_vendors_cache: dict[str, str] | None = None
+_OUI_LOAD_WARNED = False
 
 TICK_SECONDS = float(os.environ.get("LARES_LAN_TICK_SECONDS", 5))
 DEFAULT_SCAN_INTERVAL_SECONDS = 300
@@ -55,6 +72,24 @@ _REAL_INTERFACE_RE = re.compile(r"^(eth|en|wl|ww|uap|ap)")
 
 _SUBNET_DETECT_WARNED = False
 
+# SSDP/mDNS naming sources: network-wide fallbacks for whatever nbstat and
+# reverse-DNS didn't resolve, e.g. TVs, media players, printers, and other
+# non-Windows devices that were never going to answer a NetBIOS query.
+SSDP_ADDR = ("239.255.255.250", 1900)
+SSDP_TIMEOUT_SECONDS = float(os.environ.get("LARES_LAN_SSDP_TIMEOUT_SECONDS", 3))
+MDNS_TIMEOUT_SECONDS = float(os.environ.get("LARES_LAN_MDNS_TIMEOUT_SECONDS", 3))
+MDNS_SERVICE_TYPES = [
+    "_googlecast._tcp.local.",
+    "_airplay._tcp.local.",
+    "_raop._tcp.local.",
+    "_ipp._tcp.local.",
+    "_http._tcp.local.",
+    "_device-info._tcp.local.",
+    "_workstation._tcp.local.",
+    "_smb._tcp.local.",
+    "_spotify-connect._tcp.local.",
+]
+
 _UPSERT_DEVICE_SQL = """
     INSERT INTO devices (mac_address, device_type, vendor, hostname, last_ip, first_seen, last_seen)
     VALUES (:mac_address, 'lan', :vendor, :hostname, :ip_address, :timestamp, :timestamp)
@@ -71,6 +106,26 @@ _INSERT_SIGHTING_SQL = """
 """
 
 
+def _real_interface_addrs() -> list[tuple[str, str, str]]:
+    """Returns (interface_name, ipv4_address, netmask) for every real, up
+    hardware interface. Shared by detect_cidrs() (subnet auto-detection) and
+    discover_ssdp_names() below, which needs to send its multicast query out
+    each real interface individually, not just whichever one happens to be
+    the default route, to actually reach devices on a Pi-hosted AP subnet as
+    well as the main LAN."""
+    stats = psutil.net_if_stats()
+    addrs: list[tuple[str, str, str]] = []
+    for iface, iface_addrs in psutil.net_if_addrs().items():
+        if not _REAL_INTERFACE_RE.match(iface):
+            continue
+        if not stats.get(iface) or not stats[iface].isup:
+            continue
+        for addr in iface_addrs:
+            if addr.family.name == "AF_INET" and addr.netmask:
+                addrs.append((iface, addr.address, addr.netmask))
+    return addrs
+
+
 def detect_cidrs() -> list[str]:
     """Every directly-connected IPv4 subnet on a real, up hardware interface,
     via psutil (already a project dependency), not just the interface on the
@@ -82,28 +137,206 @@ def detect_cidrs() -> list[str]:
     scan it, missing every device connected to that AP."""
     global _SUBNET_DETECT_WARNED
     cidrs: list[str] = []
-    stats = psutil.net_if_stats()
-    for iface, addrs in psutil.net_if_addrs().items():
-        if not _REAL_INTERFACE_RE.match(iface):
+    for _iface, address, netmask in _real_interface_addrs():
+        try:
+            network = ipaddress.ip_network(f"{address}/{netmask}", strict=False)
+        except ValueError:
             continue
-        if not stats.get(iface) or not stats[iface].isup:
+        if network.prefixlen >= 31:  # point-to-point/no real subnet to scan
             continue
-        for addr in addrs:
-            if addr.family.name != "AF_INET" or not addr.netmask:
-                continue
-            try:
-                network = ipaddress.ip_network(f"{addr.address}/{addr.netmask}", strict=False)
-            except ValueError:
-                continue
-            if network.prefixlen >= 31:  # point-to-point/no real subnet to scan
-                continue
-            cidr = str(network)
-            if cidr not in cidrs:
-                cidrs.append(cidr)
+        cidr = str(network)
+        if cidr not in cidrs:
+            cidrs.append(cidr)
     if not cidrs and not _SUBNET_DETECT_WARNED:
         logger.warning("no usable IPv4 subnet found on any non-virtual interface")
         _SUBNET_DETECT_WARNED = True
     return cidrs
+
+
+def _parse_ssdp_location(data: bytes) -> str | None:
+    try:
+        text = data.decode("utf-8", errors="replace")
+    except UnicodeDecodeError:
+        return None
+    for line in text.split("\r\n"):
+        if line.lower().startswith("location:"):
+            return line.split(":", 1)[1].strip()
+    return None
+
+
+def _fetch_friendly_name(location: str) -> str | None:
+    try:
+        resp = requests.get(location, timeout=2)
+        resp.raise_for_status()
+        root = ET.fromstring(resp.content)
+    except (requests.RequestException, ET.ParseError):
+        return None
+    # UPnP device description XML is namespaced
+    # (urn:schemas-upnp-org:device-1-0), so match on local tag name rather
+    # than requiring the exact namespace URI to be declared up front.
+    for elem in root.iter():
+        if elem.tag.rsplit("}", 1)[-1] == "friendlyName" and elem.text:
+            return elem.text.strip()
+    return None
+
+
+def discover_ssdp_names(timeout: float = SSDP_TIMEOUT_SECONDS) -> dict[str, str]:
+    """Sends one SSDP M-SEARCH multicast request per real interface (same
+    set as _real_interface_addrs(), for the same reason detect_cidrs()
+    covers every real interface: a Pi-hosted AP subnet is just as real a
+    network segment as the main LAN, and a plain unbound socket's multicast
+    send would only reach whichever interface the default route happens to
+    pick) and collects each responder's UPnP friendlyName, keyed by IP."""
+    interface_ips = {addr for _iface, addr, _netmask in _real_interface_addrs()}
+    if not interface_ips:
+        return {}
+
+    message = (
+        "M-SEARCH * HTTP/1.1\r\n"
+        f"HOST: {SSDP_ADDR[0]}:{SSDP_ADDR[1]}\r\n"
+        'MAN: "ssdp:discover"\r\n'
+        f"MX: {max(int(timeout), 1)}\r\n"
+        "ST: ssdp:all\r\n"
+        "\r\n"
+    ).encode("utf-8")
+
+    locations_by_ip: dict[str, str] = {}
+    sockets: list[socket.socket] = []
+    try:
+        for local_ip in interface_ips:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                sock.setsockopt(
+                    socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(local_ip)
+                )
+                sock.bind((local_ip, 0))
+                sock.sendto(message, SSDP_ADDR)
+            except OSError as exc:
+                logger.debug("SSDP send on %s failed: %s", local_ip, type(exc).__name__)
+                sock.close()
+                continue
+            sockets.append(sock)
+
+        deadline = time.monotonic() + timeout
+        while sockets:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            ready, _, _ = select.select(sockets, [], [], remaining)
+            for sock in ready:
+                try:
+                    data, (ip, _port) = sock.recvfrom(65535)
+                except OSError:
+                    continue
+                if ip not in locations_by_ip:
+                    location = _parse_ssdp_location(data)
+                    if location:
+                        locations_by_ip[ip] = location
+    finally:
+        for sock in sockets:
+            sock.close()
+
+    names: dict[str, str] = {}
+    for ip, location in locations_by_ip.items():
+        name = _fetch_friendly_name(location)
+        if name:
+            names[ip] = name
+    return names
+
+
+class _MdnsNameCollector(ServiceListener):
+    def __init__(self) -> None:
+        self.names_by_ip: dict[str, str] = {}
+
+    def add_service(self, zc: Zeroconf, type_: str, name: str) -> None:
+        info = zc.get_service_info(type_, name, timeout=1000)
+        if info is None:
+            return
+        # Instance name is the part before the service type, e.g.
+        # "Living Room TV._googlecast._tcp.local." -> "Living Room TV".
+        instance = name.removesuffix(f".{type_}") or name
+        for ip in info.parsed_addresses(IPVersion.V4Only):
+            self.names_by_ip.setdefault(ip, instance)
+
+    def update_service(self, zc: Zeroconf, type_: str, name: str) -> None:
+        pass
+
+    def remove_service(self, zc: Zeroconf, type_: str, name: str) -> None:
+        pass
+
+
+def discover_mdns_names(timeout: float = MDNS_TIMEOUT_SECONDS) -> dict[str, str]:
+    """Browses a fixed list of common mDNS service types (Chromecast,
+    AirPlay, printers, generic host advertisement, ...) once per scan cycle
+    and returns each responder's advertised instance name keyed by IP.
+    Zeroconf binds every real interface by default (unlike raw SSDP above,
+    which needs that handled manually), so no extra multi-subnet handling
+    is needed here."""
+    zc = Zeroconf()
+    listener = _MdnsNameCollector()
+    try:
+        ServiceBrowser(zc, MDNS_SERVICE_TYPES, listener=listener)
+        time.sleep(timeout)
+    except OSError as exc:
+        logger.debug("mDNS discovery failed: %s", type(exc).__name__)
+    finally:
+        zc.close()
+    return listener.names_by_ip
+
+
+def _discover_fallback_names() -> dict[str, str]:
+    """Runs SSDP and mDNS discovery concurrently, since neither depends on
+    the other and both are pure listen-and-wait I/O, not worth paying their
+    timeouts back to back. SSDP wins on a collision: a UPnP friendlyName
+    tends to be a more deliberately user-facing device name than an mDNS
+    service instance name."""
+    results: dict[str, dict[str, str]] = {}
+
+    def _run(key: str, fn) -> None:
+        results[key] = fn()
+
+    threads = [
+        threading.Thread(target=_run, args=("mdns", discover_mdns_names), daemon=True),
+        threading.Thread(target=_run, args=("ssdp", discover_ssdp_names), daemon=True),
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    merged = dict(results.get("mdns", {}))
+    merged.update(results.get("ssdp", {}))
+    return merged
+
+
+def _load_oui_vendors() -> dict[str, str]:
+    global _oui_vendors_cache, _OUI_LOAD_WARNED
+    if _oui_vendors_cache is not None:
+        return _oui_vendors_cache
+    vendors: dict[str, str] = {}
+    try:
+        with _OUI_VENDORS_PATH.open(encoding="utf-8") as f:
+            for line in f:
+                prefix, _, vendor = line.rstrip().partition("\t")
+                if prefix and vendor:
+                    vendors[prefix] = vendor
+    except OSError as exc:
+        if not _OUI_LOAD_WARNED:
+            logger.warning("could not load bundled OUI vendor list: %s", type(exc).__name__)
+            _OUI_LOAD_WARNED = True
+    _oui_vendors_cache = vendors
+    return vendors
+
+
+def _lookup_vendor(mac: str) -> str | None:
+    """Fallback for when nmap's own vendor lookup comes back blank. Only
+    meaningful for a real, globally-assigned OUI; a randomized/locally-
+    administered MAC (common on phones for privacy) has no vendor to find,
+    no database will ever fix that, so this is a genuine ceiling, not a
+    coverage gap."""
+    prefix = mac.replace(":", "").replace("-", "").upper()[:6]
+    return _load_oui_vendors().get(prefix)
 
 
 def scan(cidr: str) -> list[dict]:
@@ -130,7 +363,13 @@ def scan(cidr: str) -> list[dict]:
 
     --host-timeout bounds how long nmap itself will wait on any single
     unresponsive host (defense in depth alongside _scan_bounded's outer
-    wall-clock timeout below, which is the real backstop)."""
+    wall-clock timeout below, which is the real backstop).
+
+    NetBIOS/reverse-DNS only ever resolve Windows/Samba boxes and
+    DNS-registered hosts respectively, missing most of a typical home
+    network (TVs, media players, printers, IoT gear). SSDP and mDNS are
+    tried next, network-wide rather than per-host, as a fallback for
+    whatever's still unnamed after the per-host lookups above."""
     scanner = nmap.PortScanner()
     scanner.scan(hosts=cidr, arguments="-PR -sU -p137 --script nbstat --host-timeout 15s")
     now = datetime.now(timezone.utc).isoformat()
@@ -142,7 +381,7 @@ def scan(cidr: str) -> list[dict]:
         mac = host["addresses"].get("mac")
         if not mac:
             continue
-        vendor = host.get("vendor", {}).get(mac)
+        vendor = host.get("vendor", {}).get(mac) or _lookup_vendor(mac)
         hostname = _extract_hostname(host)
         results.append(
             {
@@ -153,6 +392,13 @@ def scan(cidr: str) -> list[dict]:
                 "timestamp": now,
             }
         )
+
+    if any(r["hostname"] is None for r in results):
+        fallback_names = _discover_fallback_names()
+        for r in results:
+            if r["hostname"] is None:
+                r["hostname"] = fallback_names.get(r["ip_address"])
+
     return results
 
 
