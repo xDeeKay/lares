@@ -210,7 +210,7 @@ def discover_ssdp_names(timeout: float = SSDP_TIMEOUT_SECONDS) -> dict[str, str]
         "\r\n"
     ).encode("utf-8")
 
-    locations_by_ip: dict[str, str] = {}
+    locations_by_ip: dict[str, set[str]] = {}
     sockets: list[socket.socket] = []
     try:
         for local_ip in interface_ips:
@@ -239,19 +239,29 @@ def discover_ssdp_names(timeout: float = SSDP_TIMEOUT_SECONDS) -> dict[str, str]
                     data, (ip, _port) = sock.recvfrom(65535)
                 except OSError:
                     continue
-                if ip not in locations_by_ip:
-                    location = _parse_ssdp_location(data)
-                    if location:
-                        locations_by_ip[ip] = location
+                location = _parse_ssdp_location(data)
+                if location:
+                    locations_by_ip.setdefault(ip, set()).add(location)
     finally:
         for sock in sockets:
             sock.close()
 
     names: dict[str, str] = {}
-    for ip, location in locations_by_ip.items():
-        name = _fetch_friendly_name(location)
-        if name:
-            names[ip] = name
+    for ip, locations in locations_by_ip.items():
+        # Confirmed on real hardware (an LG webOS TV): a single device can
+        # announce several root devices at once, and not all of them
+        # necessarily return valid UPnP description XML (one consistently
+        # 404s/fails to parse here). Keeping only the first-captured
+        # LOCATION and giving up if it happened to be the bad one made the
+        # resolved name silently disappear on some cycles, falling through
+        # to a different source's name instead and looking like it was
+        # flip-flopping. Try every known LOCATION, in a stable sorted
+        # order, until one actually parses.
+        for location in sorted(locations):
+            name = _fetch_friendly_name(location)
+            if name:
+                names[ip] = name
+                break
     return names
 
 
