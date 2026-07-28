@@ -224,6 +224,10 @@ def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_device_sightings_mac_timestamp "
             "ON device_sightings (mac_address, timestamp)"
         )
+        # Added with Phase 6 (BLE): cheap latest-RSSI lookup without joining
+        # device_sightings, same rationale as last_ip above. Only ever
+        # populated by the BLE collector; LAN rows just keep this NULL.
+        _ensure_column(conn, "devices", "last_rssi", "INTEGER")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS lan_scan_settings (
@@ -245,6 +249,29 @@ def init_db() -> None:
             """
             INSERT OR IGNORE INTO lan_scan_settings (id, scan_interval_seconds, updated_at)
             VALUES (1, 300, ?)
+            """,
+            (datetime.now(timezone.utc).isoformat(),),
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ble_scan_settings (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                flush_interval_seconds INTEGER NOT NULL DEFAULT 30,
+                last_flush_at DATETIME,
+                force_flush_requested_at DATETIME,
+                updated_at DATETIME NOT NULL
+            )
+            """
+        )
+        # No cidr-equivalent column here: unlike LAN scanning, BLE has no
+        # scan-target concept, just how often the collector's continuously
+        # buffered advertisements get flushed to disk. Same default-row
+        # rationale as lan_scan_settings above (GET /api/ble/settings works
+        # out of the box, no first-run setup step).
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO ble_scan_settings (id, flush_interval_seconds, updated_at)
+            VALUES (1, 30, ?)
             """,
             (datetime.now(timezone.utc).isoformat(),),
         )

@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 
 from backend.auth import require_auth
 from backend.db import init_db
-from backend.routers import auth, containers, disk, lan, system, uptime
+from backend.routers import auth, ble, containers, disk, lan, system, uptime
 
 
 @asynccontextmanager
@@ -31,6 +31,7 @@ app.include_router(disk.router, dependencies=[Depends(require_auth)])
 app.include_router(containers.router, dependencies=[Depends(require_auth)])
 app.include_router(uptime.router, dependencies=[Depends(require_auth)])
 app.include_router(lan.router, dependencies=[Depends(require_auth)])
+app.include_router(ble.router, dependencies=[Depends(require_auth)])
 app.include_router(auth.router)
 
 

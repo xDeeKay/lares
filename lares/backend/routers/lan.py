@@ -1,49 +1,25 @@
-from datetime import datetime, timedelta, timezone
-from typing import Literal
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from backend.db import get_connection
+from backend.routers.device_shared import (
+    DeviceOut,
+    DeviceSightingOut,
+    DeviceUpdate,
+    get_sightings_rows,
+    row_to_device,
+    update_device_row,
+)
 
 router = APIRouter(prefix="/api/lan", tags=["lan"])
 
-DeviceCategory = Literal["trusted", "iot", "guest", "unknown"]
-DeviceState = Literal["present", "absent"]
-
-VALID_CATEGORIES = {"trusted", "iot", "guest", "unknown"}
 DEFAULT_SCAN_INTERVAL_SECONDS = 300
 # A device is considered "absent" once its last sighting is older than this
 # many scan cycles, mirroring how routers/uptime.py derives "stale" from
 # check-history age rather than storing a separate presence flag.
 STALE_CYCLE_MULTIPLIER = 3
-
-
-class DeviceOut(BaseModel):
-    mac_address: str
-    device_type: str
-    vendor: str | None
-    hostname: str | None
-    last_ip: str | None
-    category: DeviceCategory
-    nickname: str | None
-    first_seen: str
-    last_seen: str
-    state: DeviceState
-
-
-class DeviceUpdate(BaseModel):
-    category: DeviceCategory | None = None
-    nickname: str | None = None
-    # Explicit flag so a PATCH can clear a nickname back to null, which a
-    # plain "field not provided" can't distinguish from "leave it as-is".
-    clear_nickname: bool = False
-
-
-class DeviceSightingOut(BaseModel):
-    timestamp: str
-    ip_address: str | None
-    is_present: bool
 
 
 class LanSettingsOut(BaseModel):
@@ -59,33 +35,6 @@ class LanSettingsUpdate(BaseModel):
     # Same explicit-clear pattern as DeviceUpdate.clear_nickname: distinguishes
     # "go back to auto-detect" from "field not provided".
     clear_cidr: bool = False
-
-
-def _resolve_state(last_seen: str, scan_interval_seconds: int, now: datetime) -> DeviceState:
-    try:
-        ts = datetime.fromisoformat(last_seen)
-    except ValueError:
-        return "absent"
-    if ts.tzinfo is None:
-        ts = ts.replace(tzinfo=timezone.utc)
-    threshold = scan_interval_seconds * STALE_CYCLE_MULTIPLIER
-    age_seconds = (now - ts).total_seconds()
-    return "present" if age_seconds <= threshold else "absent"
-
-
-def _row_to_device(row, scan_interval_seconds: int, now: datetime) -> DeviceOut:
-    return DeviceOut(
-        mac_address=row["mac_address"],
-        device_type=row["device_type"],
-        vendor=row["vendor"],
-        hostname=row["hostname"],
-        last_ip=row["last_ip"],
-        category=row["category"],
-        nickname=row["nickname"],
-        first_seen=row["first_seen"],
-        last_seen=row["last_seen"],
-        state=_resolve_state(row["last_seen"], scan_interval_seconds, now),
-    )
 
 
 def _row_to_settings(row) -> LanSettingsOut:
@@ -105,83 +54,47 @@ def list_devices():
         scan_interval_seconds = (
             settings["scan_interval_seconds"] if settings else DEFAULT_SCAN_INTERVAL_SECONDS
         )
-        rows = conn.execute("SELECT * FROM devices ORDER BY last_seen DESC").fetchall()
+        # Filtered to device_type = 'lan': without this, a BLE row (Phase 6)
+        # would show up in the LAN devices list too, and have its presence
+        # judged against LAN's scan interval instead of BLE's.
+        rows = conn.execute(
+            "SELECT * FROM devices WHERE device_type = 'lan' ORDER BY last_seen DESC"
+        ).fetchall()
     finally:
         conn.close()
     now = datetime.now(timezone.utc)
-    return [_row_to_device(row, scan_interval_seconds, now) for row in rows]
+    stale_threshold = scan_interval_seconds * STALE_CYCLE_MULTIPLIER
+    return [row_to_device(row, stale_threshold, now) for row in rows]
 
 
 @router.patch("/devices/{mac_address}", response_model=DeviceOut)
 def update_device(mac_address: str, payload: DeviceUpdate):
-    mac_address = mac_address.upper()
-    if payload.category is not None and payload.category not in VALID_CATEGORIES:
-        raise HTTPException(status_code=400, detail="invalid category")
-
     conn = get_connection()
     try:
-        row = conn.execute(
-            "SELECT * FROM devices WHERE mac_address = ?", (mac_address,)
-        ).fetchone()
-        if row is None:
-            raise HTTPException(status_code=404, detail="Device not found")
-
-        category = payload.category if payload.category is not None else row["category"]
-        if payload.clear_nickname:
-            nickname = None
-        elif payload.nickname is not None:
-            nickname = payload.nickname
-        else:
-            nickname = row["nickname"]
-
-        conn.execute(
-            "UPDATE devices SET category = ?, nickname = ? WHERE mac_address = ?",
-            (category, nickname, mac_address),
-        )
-        conn.commit()
-
+        updated = update_device_row(conn, mac_address, "lan", payload)
         settings = conn.execute("SELECT * FROM lan_scan_settings WHERE id = 1").fetchone()
         scan_interval_seconds = (
             settings["scan_interval_seconds"] if settings else DEFAULT_SCAN_INTERVAL_SECONDS
         )
-        updated = conn.execute(
-            "SELECT * FROM devices WHERE mac_address = ?", (mac_address,)
-        ).fetchone()
     finally:
         conn.close()
-    return _row_to_device(updated, scan_interval_seconds, datetime.now(timezone.utc))
+    stale_threshold = scan_interval_seconds * STALE_CYCLE_MULTIPLIER
+    return row_to_device(updated, stale_threshold, datetime.now(timezone.utc))
 
 
 @router.get("/devices/{mac_address}/sightings", response_model=list[DeviceSightingOut])
 def get_device_sightings(mac_address: str, hours: int = 24, limit: int = 2000):
-    if not 1 <= hours <= 24 * 30:
-        raise HTTPException(status_code=400, detail="hours must be between 1 and 720")
-    if not 1 <= limit <= 5000:
-        raise HTTPException(status_code=400, detail="limit must be between 1 and 5000")
-
-    mac_address = mac_address.upper()
     conn = get_connection()
     try:
-        device = conn.execute(
-            "SELECT mac_address FROM devices WHERE mac_address = ?", (mac_address,)
-        ).fetchone()
-        if device is None:
-            raise HTTPException(status_code=404, detail="Device not found")
-
-        since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
-        rows = conn.execute(
-            """
-            SELECT timestamp, ip_address, is_present FROM device_sightings
-            WHERE mac_address = ? AND timestamp >= ?
-            ORDER BY timestamp ASC LIMIT ?
-            """,
-            (mac_address, since, limit),
-        ).fetchall()
+        rows = get_sightings_rows(conn, mac_address, "lan", hours, limit)
     finally:
         conn.close()
     return [
         DeviceSightingOut(
-            timestamp=r["timestamp"], ip_address=r["ip_address"], is_present=bool(r["is_present"])
+            timestamp=r["timestamp"],
+            ip_address=r["ip_address"],
+            rssi=r["rssi"],
+            is_present=bool(r["is_present"]),
         )
         for r in rows
     ]

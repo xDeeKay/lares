@@ -4,6 +4,7 @@ import { DiskStorage } from './components/DiskStorage';
 import { Containers } from './components/Containers';
 import { Uptime } from './components/Uptime';
 import { Devices } from './components/Devices';
+import { NearbyDevices } from './components/NearbyDevices';
 import { PasswordGate } from './auth/PasswordGate';
 import { useAuth } from './auth/AuthContext';
 import './App.css';
@@ -30,6 +31,7 @@ function App() {
         <Containers />
         <Uptime />
         <Devices />
+        <NearbyDevices />
       </main>
     </>
   );

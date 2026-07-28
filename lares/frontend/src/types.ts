@@ -115,6 +115,7 @@ export interface Device {
   vendor: string | null;
   hostname: string | null;
   last_ip: string | null;
+  last_rssi: number | null;
   category: DeviceCategory;
   nickname: string | null;
   first_seen: string;
@@ -125,6 +126,7 @@ export interface Device {
 export interface DeviceSighting {
   timestamp: string;
   ip_address: string | null;
+  rssi: number | null;
   is_present: boolean;
 }
 
@@ -133,4 +135,9 @@ export interface LanScanSettings {
   effective_cidr: string | null;
   scan_interval_seconds: number;
   last_scan_at: string | null;
+}
+
+export interface BleScanSettings {
+  flush_interval_seconds: number;
+  last_flush_at: string | null;
 }

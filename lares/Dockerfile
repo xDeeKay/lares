@@ -24,6 +24,11 @@ FROM python:3.12-slim
 # host plus cap_add: NET_ADMIN/NET_RAW to do a real ARP scan, since a bridge
 # network container has no L2 visibility into the physical LAN. Installed here
 # too (not a second image) to keep this a single published image.
+#
+# No equivalent apt-get line for the ble-scanner service: bleak's Linux
+# backend (dbus-fast) is a pure-Python D-Bus client, the actual Bluetooth
+# radio work happens in bluetoothd on the host outside any container. bleak
+# itself is just a pip dependency (see backend/requirements.txt).
 RUN apt-get update && apt-get install -y --no-install-recommends iputils-ping nmap \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=python-deps /install /usr/local

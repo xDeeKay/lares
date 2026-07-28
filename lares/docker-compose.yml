@@ -35,3 +35,20 @@ services:
     volumes:
       - ${APP_DATA_DIR}/data:/app/backend/data
       - /etc/localtime:/etc/localtime:ro
+
+  # Same image as web, different command, same "needs a host privilege the
+  # bridge-network web container doesn't have" reasoning as lan-scanner, but
+  # a different privilege: bleak's Linux backend is a D-Bus client, the
+  # actual Bluetooth radio work happens in bluetoothd on the host, outside
+  # any container. No network_mode: host or cap_add here, unlike lan-scanner:
+  # D-Bus is a Unix socket, not something scoped by the network namespace, so
+  # bind-mounting the host's system bus socket is enough. See
+  # backend/collectors/ble.py's docstring.
+  ble-scanner:
+    image: xdeekay/lares:0.1.0@sha256:11c0649e34c9e1a3ead1ce801cf379e5ae9b25aa0a2e15e2c4fe717b59c41816
+    command: ["python", "-m", "backend.collectors.ble"]
+    restart: unless-stopped
+    volumes:
+      - ${APP_DATA_DIR}/data:/app/backend/data
+      - /var/run/dbus:/var/run/dbus
+      - /etc/localtime:/etc/localtime:ro

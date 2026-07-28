@@ -1,6 +1,7 @@
 import type {
   AuthStatus,
   AuthToken,
+  BleScanSettings,
   ContainerAction,
   ContainerActionResult,
   ContainerInfo,
@@ -240,4 +241,34 @@ export function updateLanSettings(patch: LanScanSettingsInput): Promise<LanScanS
 
 export function scanLanNow(): Promise<LanScanSettings> {
   return postJSON<LanScanSettings>('/api/lan/scan-now', {});
+}
+
+export function getBleDevices(): Promise<Device[]> {
+  return getJSON<Device[]>('/api/ble/devices');
+}
+
+export function updateBleDevice(macAddress: string, patch: DeviceUpdateInput): Promise<Device> {
+  return patchJSON<Device>(`/api/ble/devices/${encodeURIComponent(macAddress)}`, patch);
+}
+
+export function getBleDeviceSightings(macAddress: string, hours = 24): Promise<DeviceSighting[]> {
+  return getJSON<DeviceSighting[]>(
+    `/api/ble/devices/${encodeURIComponent(macAddress)}/sightings?hours=${hours}`,
+  );
+}
+
+export function getBleSettings(): Promise<BleScanSettings> {
+  return getJSON<BleScanSettings>('/api/ble/settings');
+}
+
+export interface BleScanSettingsInput {
+  flush_interval_seconds?: number;
+}
+
+export function updateBleSettings(patch: BleScanSettingsInput): Promise<BleScanSettings> {
+  return patchJSON<BleScanSettings>('/api/ble/settings', patch);
+}
+
+export function flushBleNow(): Promise<BleScanSettings> {
+  return postJSON<BleScanSettings>('/api/ble/flush-now', {});
 }
