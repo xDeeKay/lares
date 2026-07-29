@@ -126,9 +126,18 @@ def _write_flush(conn, rows: list[dict]) -> None:
     conn.commit()
 
 
-async def _flush(conn, loop: asyncio.AbstractEventLoop) -> None:
+def _flush(conn) -> None:
+    """Deliberately synchronous, not offloaded to an executor thread: a
+    sqlite3.Connection can only be used from the thread that created it
+    (get_connection() is called once in _run_async, on the event loop's own
+    thread), so handing conn to a ThreadPoolExecutor worker raised
+    sqlite3.ProgrammingError on every flush, confirmed on real hardware. The
+    writes here are a handful of rows at most every flush_interval_seconds,
+    small enough that blocking the event loop for the call is a non-issue in
+    practice, unlike lan.py's nmap subprocess which genuinely needs its own
+    thread."""
     if not _buffer:
-        await loop.run_in_executor(None, _write_flush, conn, [])
+        _write_flush(conn, [])
         return
     now_iso = datetime.now(timezone.utc).isoformat()
     rows = [
@@ -141,11 +150,11 @@ async def _flush(conn, loop: asyncio.AbstractEventLoop) -> None:
         }
         for mac, v in _buffer.items()
     ]
-    # No await between building `rows` above and clearing the buffer below,
-    # so no advertisement callback can interleave and have its update
-    # silently discarded mid-swap (see _buffer's own docstring above).
+    # No I/O between building `rows` above and clearing the buffer below, so
+    # no advertisement callback (same thread, see _buffer's own docstring)
+    # can interleave and have its update silently discarded mid-swap.
     _buffer.clear()
-    await loop.run_in_executor(None, _write_flush, conn, rows)
+    _write_flush(conn, rows)
     logger.info("flushed %d BLE device(s)", len(rows))
 
 
@@ -172,13 +181,11 @@ def _flush_due(settings, now: datetime) -> bool:
     return False
 
 
-async def _flush_loop(conn, stop: asyncio.Event, loop: asyncio.AbstractEventLoop) -> None:
+async def _flush_loop(conn, stop: asyncio.Event) -> None:
     while not stop.is_set():
-        settings = await loop.run_in_executor(
-            None, lambda: conn.execute("SELECT * FROM ble_scan_settings WHERE id = 1").fetchone()
-        )
+        settings = conn.execute("SELECT * FROM ble_scan_settings WHERE id = 1").fetchone()
         if settings is not None and _flush_due(settings, datetime.now(timezone.utc)):
-            await _flush(conn, loop)
+            _flush(conn)
 
         try:
             await asyncio.wait_for(stop.wait(), timeout=SETTINGS_POLL_SECONDS)
@@ -188,7 +195,6 @@ async def _flush_loop(conn, stop: asyncio.Event, loop: asyncio.AbstractEventLoop
 
 async def _run_async(flush_seconds: float) -> None:
     conn = get_connection()
-    loop = asyncio.get_running_loop()
     stop = asyncio.Event()
 
     def _handle_signal(signum, frame):
@@ -216,7 +222,7 @@ async def _run_async(flush_seconds: float) -> None:
                 continue
 
             try:
-                await _flush_loop(conn, stop, loop)
+                await _flush_loop(conn, stop)
             except Exception as exc:
                 # A hang/crash inside the flush loop shouldn't kill the
                 # whole collector, same "can't enumerate every D-Bus/
@@ -229,7 +235,7 @@ async def _run_async(flush_seconds: float) -> None:
                 except Exception:
                     pass
 
-        await _flush(conn, loop)  # final flush of anything buffered but not yet written
+        _flush(conn)  # final flush of anything buffered but not yet written
     finally:
         conn.close()
         logger.info("collector stopped")
